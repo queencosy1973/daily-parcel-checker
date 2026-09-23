@@ -70,9 +70,21 @@
       },
       onRemoteOrders: (remoteOrders) => {
         state.orders = remoteOrders;
+        const count = reconcileScansAndOrders();
         renderAll();
+        if (count > 0) {
+          const toast = $('desktop-remote-toast');
+          if (toast) {
+            toast.innerText = `✨ ได้รับคำสั่งซื้อใหม่และจับคู่ย้อนหลังสำเร็จ ${count} รายการ`;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 4000);
+          }
+        }
       }
     });
+
+    // Run Initial Reconciliation in case orders or scans were imported previously
+    reconcileScansAndOrders();
 
     // 3. Setup Event Listeners
     setupTabs();
@@ -85,6 +97,7 @@
     setupClearButton();
     setupQrConnectModal();
     setupFilters();
+    setupReMatchButton();
 
     // 4. Check if Mobile View requested via URL hash
     if (window.location.hash === '#scanner' || window.innerWidth < 768) {
@@ -323,6 +336,76 @@
   }
 
   // =========================================================================
+  // DYNAMIC RECONCILIATION & RESOLUTION ENGINE (TWO-WAY RETROACTIVE MATCHING)
+  // =========================================================================
+  function resolveScanMatch(scan) {
+    const targetDate = scan.scanDate;
+    const clean = scan.cleanTracking;
+    if (!clean) return { result: 'ข้อมูลไม่ครบ/รูปแบบผิด', order: null, statusType: 'invalid' };
+
+    const matchedOrders = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean);
+    const totalOrdersThisDate = state.orders.filter((o) => o.shipDate === targetDate).length;
+
+    if (matchedOrders.length === 1) {
+      return {
+        result: 'พบในรายการส่ง',
+        order: matchedOrders[0],
+        statusType: 'matched'
+      };
+    } else if (matchedOrders.length > 1) {
+      return {
+        result: 'รายการส่งซ้ำ',
+        order: matchedOrders[0],
+        statusType: 'dup_order'
+      };
+    } else {
+      if (totalOrdersThisDate === 0) {
+        return {
+          result: 'รอนำเข้าคำสั่งซื้อ',
+          order: null,
+          statusType: 'pending_orders'
+        };
+      } else {
+        return {
+          result: 'ไม่พบในรายการส่งของวันนี้',
+          order: null,
+          statusType: 'unmatched'
+        };
+      }
+    }
+  }
+
+  function reconcileScansAndOrders() {
+    let reMatchedCount = 0;
+    state.scans.forEach((scan) => {
+      const resolution = resolveScanMatch(scan);
+      if (resolution.order) {
+        if (!scan.matchedOrderId || scan.matchedOrderId !== resolution.order.orderId || scan.matchResult !== resolution.result) {
+          scan.matchedOrderId = resolution.order.orderId;
+          scan.matchedSku = resolution.order.sku;
+          scan.matchedQty = resolution.order.qty;
+          scan.matchedCarrier = resolution.order.carrier;
+          scan.matchResult = resolution.result;
+          reMatchedCount++;
+        }
+      } else {
+        if (scan.matchResult !== resolution.result) {
+          scan.matchResult = resolution.result;
+          scan.matchedOrderId = '';
+          scan.matchedSku = '';
+          scan.matchedQty = '';
+          scan.matchedCarrier = '';
+        }
+      }
+    });
+
+    if (reMatchedCount > 0) {
+      SyncService.saveLocalScans(state.scans);
+    }
+    return reMatchedCount;
+  }
+
+  // =========================================================================
   // BARCODE SCANNING & AUTO-MATCHING ENGINE
   // =========================================================================
   async function processScannedBarcode(rawBarcode, source = 'ปืนสแกน') {
@@ -337,26 +420,15 @@
     state.scannerName = scannerName;
     SyncService.saveConfig({ ...SyncService.getConfig(), scannerName });
 
-    // Look for matching orders on the active date
-    const matchedOrders = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean);
-
     // Check if this tracking was already scanned today
     const existingScansToday = state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === clean);
     const isDuplicate = existingScansToday.length > 0;
 
-    // Determine Result Status
-    let matchResult = '';
-    let matchedOrder = null;
-
-    if (matchedOrders.length === 1) {
-      matchResult = 'พบในรายการส่ง';
-      matchedOrder = matchedOrders[0];
-    } else if (matchedOrders.length > 1) {
-      matchResult = 'รายการส่งซ้ำ';
-      matchedOrder = matchedOrders[0];
-    } else {
-      matchResult = 'ไม่พบในรายการส่งของวันนี้';
-    }
+    // Dynamically resolve match against today's orders
+    const dummyScan = { scanDate: targetDate, cleanTracking: clean };
+    const resolution = resolveScanMatch(dummyScan);
+    const matchedOrder = resolution.order;
+    const matchResult = resolution.result;
 
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0];
@@ -382,7 +454,8 @@
     state.scans.unshift(newScanRecord);
 
     // Trigger Audio & Visual HUD Feedback
-    showScanFeedback(newScanRecord, isDuplicate, matchedOrders.length);
+    const matchedCount = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean).length;
+    showScanFeedback(newScanRecord, isDuplicate, matchedCount);
 
     // Re-render UI
     renderAll();
@@ -415,6 +488,14 @@
         title = `⚠️ สแกนซ้ำ: ${scanRecord.trackingId}`;
         subtitle = `เลขพัสดุนี้ถูกสแกนไปแล้วในวันนี้! (คำสั่งซื้อ: ${scanRecord.matchedOrderId || '-'})`;
       }
+    } else if (scanRecord.matchResult === 'รอนำเข้าคำสั่งซื้อ') {
+      // PENDING ORDERS IMPORT ⏳ (Scan before order manifest is keyed)
+      AudioFeedback.warning();
+      CameraScanner.flashBox('duplicate');
+      bgClass = 'bg-sky-50 border-sky-500 text-sky-900';
+      iconName = 'clock';
+      title = `📦 บันทึกการสแกนแล้ว: ${scanRecord.trackingId}`;
+      subtitle = `บันทึกเวลาเรียบร้อย (ยังไม่มีคำสั่งซื้อในระบบ ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อคีย์ข้อมูลเข้า)`;
     } else if (scanRecord.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
       // NOT FOUND 🚨
       AudioFeedback.error();
@@ -422,7 +503,7 @@
       bgClass = 'bg-rose-50 border-rose-500 text-rose-900';
       iconName = 'x-circle';
       title = `🚨 ไม่พบในรายการส่งวันนี้: ${scanRecord.trackingId}`;
-      subtitle = `พัสดุนี้ไม่อยู่ในรายการส่งของวันที่ ${state.activeDate} (อาจเป็นพัสดุผิดวัน หรือพัสดุนอกรายการ)`;
+      subtitle = `ไม่อยู่ในรายการส่งของวันที่ ${state.activeDate} (หากยังไม่ได้คีย์เข้าระบบ เมื่อคีย์เข้าแล้วระบบจะจับคู่ย้อนหลังให้อัตโนมัติ)`;
     } else {
       // DUPLICATE IN ORDER LIST ⚠️
       AudioFeedback.warning();
@@ -736,14 +817,24 @@
 
     let html = '';
     todayScans.forEach((scan, idx) => {
-      const matchBadge = getScanMatchBadge(scan.matchResult, scan.isDuplicateScan);
+      const match = resolveScanMatch(scan);
+      const matchBadge = getScanMatchBadge(match.result, scan.isDuplicateScan);
+      const displayOrderId = match.order ? match.order.orderId : (scan.matchedOrderId || '-');
+      const displaySku = match.order 
+        ? `${match.order.sku} (${match.order.qty} ชิ้น)` 
+        : (scan.matchedSku ? `${scan.matchedSku} (${scan.matchedQty} ชิ้น)` : '-');
+      const displayCarrier = match.order ? match.order.carrier : (scan.matchedCarrier || '');
+
       html += `
         <tr class="hover:bg-slate-50 transition-colors border-b border-slate-100">
           <td class="py-2.5 px-3.5 text-xs text-slate-400 font-mono text-center">${todayScans.length - idx}</td>
           <td class="py-2.5 px-3.5 text-xs font-mono font-medium text-slate-600">${escapeHtml(scan.scanTime || '')}</td>
           <td class="py-2.5 px-3.5 text-xs font-bold text-slate-900 font-mono tracking-wider">${escapeHtml(scan.trackingId)}</td>
-          <td class="py-2.5 px-3.5 text-xs font-mono text-slate-700">${escapeHtml(scan.matchedOrderId || '-')}</td>
-          <td class="py-2.5 px-3.5 text-xs text-slate-600">${escapeHtml(scan.matchedSku ? `${scan.matchedSku} (${scan.matchedQty} ชิ้น)` : '-')}</td>
+          <td class="py-2.5 px-3.5 text-xs font-mono font-semibold text-slate-800">${escapeHtml(displayOrderId)}</td>
+          <td class="py-2.5 px-3.5 text-xs text-slate-600">
+            ${escapeHtml(displaySku)}
+            ${displayCarrier ? `<span class="ml-1 text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-medium">${escapeHtml(displayCarrier)}</span>` : ''}
+          </td>
           <td class="py-2.5 px-3.5 text-xs text-slate-600">
             <span class="inline-flex items-center gap-1">
               <i data-lucide="${scan.source.includes('มือถือ') ? 'smartphone' : 'barcode'}" class="w-3.5 h-3.5 text-slate-400"></i>
@@ -776,10 +867,12 @@
   function getScanMatchBadge(matchResult, isDuplicate) {
     if (matchResult === 'พบในรายการส่ง') {
       if (!isDuplicate) {
-        return '<span class="badge-status bg-emerald-50 text-emerald-700 border-emerald-300"><i data-lucide="check" class="w-3.5 h-3.5"></i> พบในรายการส่ง</span>';
+        return '<span class="badge-status bg-emerald-50 text-emerald-700 border-emerald-300 font-bold"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i> พบในรายการส่ง</span>';
       } else {
         return '<span class="badge-status bg-amber-50 text-amber-800 border-amber-300"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> สแกนซ้ำตรงวัน</span>';
       }
+    } else if (matchResult === 'รอนำเข้าคำสั่งซื้อ') {
+      return '<span class="badge-status bg-sky-50 text-sky-700 border-sky-300 font-semibold"><i data-lucide="clock" class="w-3.5 h-3.5"></i> รอนำเข้าออเดอร์</span>';
     } else if (matchResult === 'ไม่พบในรายการส่งของวันนี้') {
       return '<span class="badge-status bg-rose-50 text-rose-700 border-rose-300 font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i> ไม่พบในรายการส่ง</span>';
     } else {
@@ -846,13 +939,18 @@
 
         // Add to state and save
         state.orders = state.orders.concat(newOrders);
+        const reMatched = reconcileScansAndOrders();
         SyncService.saveLocalOrders(state.orders);
 
         textarea.value = '';
         if (modal) modal.classList.add('hidden');
 
-        alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${newOrders.length} รายการ!`);
         renderAll();
+        if (reMatched > 0) {
+          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${newOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
+        } else {
+          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${newOrders.length} รายการ!`);
+        }
       });
     }
 
@@ -876,10 +974,15 @@
             const newOrders = parseExcelRows(rows);
             if (newOrders.length > 0) {
               state.orders = state.orders.concat(newOrders);
+              const reMatched = reconcileScansAndOrders();
               SyncService.saveLocalOrders(state.orders);
-              alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${newOrders.length} รายการ!`);
-              if (modal) modal.classList.add('hidden');
               renderAll();
+              if (reMatched > 0) {
+                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${newOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
+              } else {
+                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${newOrders.length} รายการ!`);
+              }
+              if (modal) modal.classList.add('hidden');
             } else {
               alert('ไม่พบข้อมูลรายการที่ตรงตามโครงสร้าง');
             }
@@ -890,6 +993,17 @@
         reader.readAsArrayBuffer(file);
       });
     }
+  }
+
+  function setupReMatchButton() {
+    const btn = $('btn-re-match');
+    if (!btn) return;
+
+    btn.addEventListener('click', () => {
+      const reMatched = reconcileScansAndOrders();
+      renderAll();
+      alert(`🔄 ตรวจสอบและประมวลผลการจับคู่ข้อมูลเรียบร้อย!\nพัสดุที่ตรงกับคำสั่งซื้อ: ${reMatched} รายการ`);
+    });
   }
 
   function parsePastedOrders(text) {

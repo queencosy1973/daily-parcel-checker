@@ -214,6 +214,7 @@
 
         // Query today's orders
         const matchedOrders = orders.filter(o => o.shipDate === today && o.cleanTracking === clean);
+        const totalOrdersToday = orders.filter(o => o.shipDate === today).length;
         const existingScansToday = scans.filter(s => s.scanDate === today && s.cleanTracking === clean);
         const isDuplicate = existingScansToday.length > 0;
 
@@ -227,7 +228,11 @@
           matchResult = 'รายการส่งซ้ำ';
           matchedOrder = matchedOrders[0];
         } else {
-          matchResult = 'ไม่พบในรายการส่งของวันนี้';
+          if (totalOrdersToday === 0) {
+            matchResult = 'รอนำเข้าคำสั่งซื้อ';
+          } else {
+            matchResult = 'ไม่พบในรายการส่งของวันนี้';
+          }
         }
 
         const now = new Date();
@@ -286,6 +291,17 @@
               </div>
             `;
           }
+        } else if (scan.matchResult === 'รอนำเข้าคำสั่งซื้อ') {
+          AudioFeedback.warning();
+          CameraScanner.flashBox('duplicate');
+          hud.className = 'p-3.5 rounded-xl border-2 border-sky-500 bg-sky-950/80 text-sky-200 flex items-start gap-3 shadow-md';
+          hud.innerHTML = `
+            <div class="shrink-0 text-sky-400 mt-0.5"><i data-lucide="clock" class="w-6 h-6"></i></div>
+            <div class="flex-1 min-w-0">
+              <div class="font-bold text-sm text-sky-100">📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scan.trackingId}</div>
+              <div class="text-xs text-sky-300/90 mt-0.5">บันทึกเวลาสแกนเรียบร้อย ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อคีย์ออเดอร์เข้า</div>
+            </div>
+          `;
         } else if (scan.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
           AudioFeedback.error();
           CameraScanner.flashBox('error');
@@ -294,7 +310,7 @@
             <div class="shrink-0 text-rose-400 mt-0.5"><i data-lucide="x-circle" class="w-6 h-6"></i></div>
             <div class="flex-1 min-w-0">
               <div class="font-bold text-sm text-rose-100">🚨 ไม่พบในรายการส่งวันนี้: ${scan.trackingId}</div>
-              <div class="text-xs text-rose-300/90 mt-0.5">ไม่อยู่ในรายการส่งของวันนี้! (ของผิดวัน หรือพัสดุนอกรายการ)</div>
+              <div class="text-xs text-rose-300/90 mt-0.5">ไม่อยู่ในรายการส่งของวันนี้ (หากยังไม่ได้คีย์ออเดอร์เข้าระบบ เมื่อคีย์เข้าจะจับคู่ย้อนหลังให้อัตโนมัติ)</div>
             </div>
           `;
         } else {
@@ -321,7 +337,7 @@
         const listEl = $('mobile-recent-scans-list');
         if (!listEl) return;
 
-        const todayScans = scans.filter(s => s.scanDate === today).slice(0, 10);
+        const todayScans = scans.filter(s => s.scanDate === today).slice(0, 15);
         if (todayScans.length === 0) {
           listEl.innerHTML = '<div class="text-center py-4 text-slate-500 text-[11px]">ยังไม่มีประวัติการสแกน</div>';
           return;
@@ -329,23 +345,53 @@
 
         let html = '';
         todayScans.forEach(s => {
+          const mOrders = orders.filter(o => o.shipDate === today && o.cleanTracking === s.cleanTracking);
           let dotColor = 'bg-emerald-400';
-          if (s.matchResult === 'ไม่พบในรายการส่งของวันนี้') dotColor = 'bg-rose-500';
-          else if (s.isDuplicateScan) dotColor = 'bg-amber-400';
+          let statusText = 'พบในรายการส่ง';
+          let textColor = 'text-emerald-400';
+
+          if (mOrders.length === 1) {
+            dotColor = 'bg-emerald-400';
+            statusText = mOrders[0].orderId;
+            textColor = 'text-emerald-300';
+          } else if (mOrders.length > 1) {
+            dotColor = 'bg-purple-400';
+            statusText = 'ออเดอร์ซ้ำ';
+            textColor = 'text-purple-300';
+          } else {
+            const totalOrders = orders.filter(o => o.shipDate === today).length;
+            if (totalOrders === 0) {
+              dotColor = 'bg-sky-400';
+              statusText = 'รอนำเข้าออเดอร์';
+              textColor = 'text-sky-300';
+            } else {
+              dotColor = 'bg-rose-500';
+              statusText = 'ไม่พบในรายการ';
+              textColor = 'text-rose-400';
+            }
+          }
+
+          if (s.isDuplicateScan) {
+            dotColor = 'bg-amber-400';
+          }
 
           html += `
-            <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-700/80 flex items-center justify-between gap-2">
-              <div class="flex items-center gap-1.5 min-w-0">
-                <span class="w-1.5 h-1.5 rounded-full ${dotColor}"></span>
-                <span class="font-bold text-white tracking-wide truncate">${s.trackingId}</span>
+            <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-700/80 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="w-2 h-2 rounded-full ${dotColor} shrink-0"></span>
+                <div class="min-w-0">
+                  <div class="font-bold text-white tracking-wide truncate text-xs">${s.trackingId}</div>
+                  <div class="text-[10px] ${textColor} truncate font-sans">${statusText}</div>
+                </div>
               </div>
-              <div class="text-[10px] text-slate-400 shrink-0">
+              <div class="text-[10px] text-slate-400 shrink-0 font-mono">
                 ${s.scanTime}
               </div>
             </div>
           `;
         });
         listEl.innerHTML = html;
+        lucide.createIcons();
       }
 
       // Auto start camera if supported on mobile
