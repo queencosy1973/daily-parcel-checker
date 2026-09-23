@@ -119,14 +119,14 @@
         const matches = todayOrders.filter(o => o.cleanTracking === clean);
         if (matches.length === 1) return { result: 'พบในรายการส่ง', order: matches[0] };
         if (matches.length > 1) return { result: 'รายการส่งซ้ำ', order: matches[0] };
-        return { result: 'ไม่พบในรายการส่งของวันนี้', order: null };
+        return { result: 'รอนำเข้าออเดอร์', order: null };
       }
 
       const match1 = matchScan('  th-001  ');
       assert('Match TH-001 resolves Order ID ORD-1', match1.result === 'พบในรายการส่ง' && match1.order.orderId === 'ORD-1');
 
       const matchExtra = matchScan('TH-EXTRA');
-      assert('Match TH-EXTRA returns ไม่พบในรายการส่งของวันนี้', matchExtra.result === 'ไม่พบในรายการส่งของวันนี้' && matchExtra.order === null);
+      assert('Match TH-EXTRA returns รอนำเข้าออเดอร์', matchExtra.result === 'รอนำเข้าออเดอร์' && matchExtra.order === null);
 
       const matchDup = matchScan('th-004');
       assert('Match TH-004 returns รายการส่งซ้ำ', matchDup.result === 'รายการส่งซ้ำ' && matchDup.order.orderId === 'ORD-4');

@@ -133,7 +133,7 @@ const CameraScanner = (function () {
       const box = document.getElementById(currentBoxId);
       if (box) {
         box.classList.add('hidden');
-        box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500');
+        box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500');
       }
     }
   }
@@ -143,7 +143,7 @@ const CameraScanner = (function () {
     const box = document.getElementById(currentBoxId);
     if (!box) return;
 
-    box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500');
+    box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500');
 
     if (type === 'success') {
       box.classList.add('ring-4', 'ring-emerald-400', 'border-emerald-500');
@@ -151,10 +151,12 @@ const CameraScanner = (function () {
       box.classList.add('ring-4', 'ring-rose-500', 'border-rose-500');
     } else if (type === 'duplicate') {
       box.classList.add('ring-4', 'ring-amber-400', 'border-amber-500');
+    } else if (type === 'pending') {
+      box.classList.add('ring-4', 'ring-sky-400', 'border-sky-500');
     }
 
     setTimeout(() => {
-      box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500');
+      box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500');
     }, 1200);
   }
 

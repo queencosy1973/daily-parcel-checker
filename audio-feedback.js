@@ -153,11 +153,44 @@ const AudioFeedback = (function () {
     }
   }
 
+  // Play Pending Sound (Soft pleasant 2-tone chime) - Scanned & waiting for order import
+  function pending() {
+    try {
+      const ctx = getContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.35);
+
+      if (navigator.vibrate) {
+        navigator.vibrate(60);
+      }
+    } catch (e) {
+      console.warn('AudioFeedback error:', e);
+    }
+  }
+
   return {
     init: getContext,
     success,
     error,
     duplicate,
-    warning
+    warning,
+    pending
   };
 })();
+

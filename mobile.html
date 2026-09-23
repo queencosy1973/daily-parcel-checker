@@ -125,9 +125,9 @@
   </main>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js"></script>
-  <script src="camera-scanner.js"></script>
-  <script src="sync-service.js"></script>
+  <script src="audio-feedback.js?v=2.3"></script>
+  <script src="camera-scanner.js?v=2.3"></script>
+  <script src="sync-service.js?v=2.3"></script>
   <script>
     (function () {
       'use strict';
@@ -141,8 +141,16 @@
 
       // Initialize Sync
       SyncService.init({
+        onRemoteScan: (remoteScan) => {
+          if (remoteScan && !scans.some(s => s.id === remoteScan.id)) {
+            scans.unshift(remoteScan);
+            updateScannedCount();
+            renderMobileScans();
+          }
+        },
         onRemoteOrders: (newOrders) => {
           orders = newOrders;
+          renderMobileScans();
         }
       });
       orders = SyncService.getLocalOrders();
@@ -228,11 +236,8 @@
           matchResult = 'รายการส่งซ้ำ';
           matchedOrder = matchedOrders[0];
         } else {
-          if (totalOrdersToday === 0) {
-            matchResult = 'รอนำเข้าคำสั่งซื้อ';
-          } else {
-            matchResult = 'ไม่พบในรายการส่งของวันนี้';
-          }
+          // Unconditionally set to รอนำเข้าออเดอร์ for any unmatched barcode
+          matchResult = 'รอนำเข้าออเดอร์';
         }
 
         const now = new Date();
@@ -291,17 +296,30 @@
               </div>
             `;
           }
-        } else if (scan.matchResult === 'รอนำเข้าคำสั่งซื้อ') {
-          AudioFeedback.warning();
-          CameraScanner.flashBox('duplicate');
-          hud.className = 'p-3.5 rounded-xl border-2 border-sky-500 bg-sky-950/80 text-sky-200 flex items-start gap-3 shadow-md';
-          hud.innerHTML = `
-            <div class="shrink-0 text-sky-400 mt-0.5"><i data-lucide="clock" class="w-6 h-6"></i></div>
-            <div class="flex-1 min-w-0">
-              <div class="font-bold text-sm text-sky-100">📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scan.trackingId}</div>
-              <div class="text-xs text-sky-300/90 mt-0.5">บันทึกเวลาสแกนเรียบร้อย ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อคีย์ออเดอร์เข้า</div>
-            </div>
-          `;
+        } else if (scan.matchResult === 'รอนำเข้าคำสั่งซื้อ' || scan.matchResult === 'รอนำเข้าออเดอร์') {
+          if (!isDuplicate) {
+            AudioFeedback.pending();
+            CameraScanner.flashBox('pending');
+            hud.className = 'p-3.5 rounded-xl border-2 border-sky-500 bg-sky-950/80 text-sky-200 flex items-start gap-3 shadow-md';
+            hud.innerHTML = `
+              <div class="shrink-0 text-sky-400 mt-0.5"><i data-lucide="clock" class="w-6 h-6"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="font-bold text-sm text-sky-100">📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scan.trackingId}</div>
+                <div class="text-xs text-sky-300/90 mt-0.5">บันทึกเวลาสแกนเรียบร้อย ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าออเดอร์</div>
+              </div>
+            `;
+          } else {
+            AudioFeedback.duplicate();
+            CameraScanner.flashBox('duplicate');
+            hud.className = 'p-3.5 rounded-xl border-2 border-amber-500 bg-amber-950/80 text-amber-200 flex items-start gap-3 shadow-md';
+            hud.innerHTML = `
+              <div class="shrink-0 text-amber-400 mt-0.5"><i data-lucide="alert-triangle" class="w-6 h-6"></i></div>
+              <div class="flex-1 min-w-0">
+                <div class="font-bold text-sm text-amber-100">🔁 สแกนซ้ำ: ${scan.trackingId}</div>
+                <div class="text-xs text-amber-300/90 mt-0.5 truncate">พัสดุนี้ถูกสแกนไปแล้วในวันนี้ (สถานะ: รอนำเข้าออเดอร์)</div>
+              </div>
+            `;
+          }
         } else if (scan.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
           AudioFeedback.error();
           CameraScanner.flashBox('error');
@@ -359,16 +377,9 @@
             statusText = 'ออเดอร์ซ้ำ';
             textColor = 'text-purple-300';
           } else {
-            const totalOrders = orders.filter(o => o.shipDate === today).length;
-            if (totalOrders === 0) {
-              dotColor = 'bg-sky-400';
-              statusText = 'รอนำเข้าออเดอร์';
-              textColor = 'text-sky-300';
-            } else {
-              dotColor = 'bg-rose-500';
-              statusText = 'ไม่พบในรายการ';
-              textColor = 'text-rose-400';
-            }
+            dotColor = 'bg-sky-400';
+            statusText = 'รอนำเข้าออเดอร์';
+            textColor = 'text-sky-300';
           }
 
           if (s.isDuplicateScan) {

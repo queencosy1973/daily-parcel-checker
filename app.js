@@ -344,7 +344,6 @@
     if (!clean) return { result: 'ข้อมูลไม่ครบ/รูปแบบผิด', order: null, statusType: 'invalid' };
 
     const matchedOrders = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean);
-    const totalOrdersThisDate = state.orders.filter((o) => o.shipDate === targetDate).length;
 
     if (matchedOrders.length === 1) {
       return {
@@ -359,24 +358,19 @@
         statusType: 'dup_order'
       };
     } else {
-      if (totalOrdersThisDate === 0) {
-        return {
-          result: 'รอนำเข้าคำสั่งซื้อ',
-          order: null,
-          statusType: 'pending_orders'
-        };
-      } else {
-        return {
-          result: 'ไม่พบในรายการส่งของวันนี้',
-          order: null,
-          statusType: 'unmatched'
-        };
-      }
+      // Unconditionally return รอนำเข้าออเดอร์ so warehouse staff can scan labels
+      // ahead of time, and the system retroactively matches when orders are imported later.
+      return {
+        result: 'รอนำเข้าออเดอร์',
+        order: null,
+        statusType: 'pending_orders'
+      };
     }
   }
 
   function reconcileScansAndOrders() {
     let reMatchedCount = 0;
+    let updatedCount = 0;
     state.scans.forEach((scan) => {
       const resolution = resolveScanMatch(scan);
       if (resolution.order) {
@@ -387,6 +381,7 @@
           scan.matchedCarrier = resolution.order.carrier;
           scan.matchResult = resolution.result;
           reMatchedCount++;
+          updatedCount++;
         }
       } else {
         if (scan.matchResult !== resolution.result) {
@@ -395,11 +390,12 @@
           scan.matchedSku = '';
           scan.matchedQty = '';
           scan.matchedCarrier = '';
+          updatedCount++;
         }
       }
     });
 
-    if (reMatchedCount > 0) {
+    if (updatedCount > 0) {
       SyncService.saveLocalScans(state.scans);
     }
     return reMatchedCount;
@@ -488,16 +484,25 @@
         title = `⚠️ สแกนซ้ำ: ${scanRecord.trackingId}`;
         subtitle = `เลขพัสดุนี้ถูกสแกนไปแล้วในวันนี้! (คำสั่งซื้อ: ${scanRecord.matchedOrderId || '-'})`;
       }
-    } else if (scanRecord.matchResult === 'รอนำเข้าคำสั่งซื้อ') {
+    } else if (scanRecord.matchResult === 'รอนำเข้าคำสั่งซื้อ' || scanRecord.matchResult === 'รอนำเข้าออเดอร์') {
       // PENDING ORDERS IMPORT ⏳ (Scan before order manifest is keyed)
-      AudioFeedback.warning();
-      CameraScanner.flashBox('duplicate');
-      bgClass = 'bg-sky-50 border-sky-500 text-sky-900';
-      iconName = 'clock';
-      title = `📦 บันทึกการสแกนแล้ว: ${scanRecord.trackingId}`;
-      subtitle = `บันทึกเวลาเรียบร้อย (ยังไม่มีคำสั่งซื้อในระบบ ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อคีย์ข้อมูลเข้า)`;
+      if (!isDuplicate) {
+        AudioFeedback.pending();
+        CameraScanner.flashBox('pending');
+        bgClass = 'bg-sky-50 border-sky-500 text-sky-900';
+        iconName = 'clock';
+        title = `📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scanRecord.trackingId}`;
+        subtitle = `บันทึกเวลาเรียบร้อย (ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าข้อมูลคำสั่งซื้อ)`;
+      } else {
+        AudioFeedback.duplicate();
+        CameraScanner.flashBox('duplicate');
+        bgClass = 'bg-amber-50 border-amber-500 text-amber-900';
+        iconName = 'alert-triangle';
+        title = `⚠️ สแกนซ้ำ: ${scanRecord.trackingId}`;
+        subtitle = `เลขพัสดุนี้ถูกสแกนไปแล้วในวันนี้ (สถานะ: รอนำเข้าออเดอร์)`;
+      }
     } else if (scanRecord.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
-      // NOT FOUND 🚨
+      // NOT FOUND 🚨 (fallback if any)
       AudioFeedback.error();
       CameraScanner.flashBox('error');
       bgClass = 'bg-rose-50 border-rose-500 text-rose-900';
@@ -871,8 +876,12 @@
       } else {
         return '<span class="badge-status bg-amber-50 text-amber-800 border-amber-300"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> สแกนซ้ำตรงวัน</span>';
       }
-    } else if (matchResult === 'รอนำเข้าคำสั่งซื้อ') {
-      return '<span class="badge-status bg-sky-50 text-sky-700 border-sky-300 font-semibold"><i data-lucide="clock" class="w-3.5 h-3.5"></i> รอนำเข้าออเดอร์</span>';
+    } else if (matchResult === 'รอนำเข้าคำสั่งซื้อ' || matchResult === 'รอนำเข้าออเดอร์') {
+      if (!isDuplicate) {
+        return '<span class="badge-status bg-sky-50 text-sky-700 border-sky-300 font-semibold"><i data-lucide="clock" class="w-3.5 h-3.5"></i> รอนำเข้าออเดอร์</span>';
+      } else {
+        return '<span class="badge-status bg-amber-50 text-amber-800 border-amber-300"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> รอนำเข้า (สแกนซ้ำ)</span>';
+      }
     } else if (matchResult === 'ไม่พบในรายการส่งของวันนี้') {
       return '<span class="badge-status bg-rose-50 text-rose-700 border-rose-300 font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i> ไม่พบในรายการส่ง</span>';
     } else {
