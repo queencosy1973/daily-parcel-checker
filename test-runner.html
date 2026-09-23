@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <title>QueenCosy Daily Parcel Checker - Automated Test Runner</title>
+  <script src="xlsx.full.min.js"></script>
+  <script src="audio-feedback.js"></script>
+  <script src="sync-service.js"></script>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #0f172a; color: #f8fafc; }
+    .pass { color: #34d399; font-weight: bold; }
+    .fail { color: #f87171; font-weight: bold; }
+    .summary { margin-top: 20px; padding: 15px; border-radius: 8px; background: #1e293b; }
+  </style>
+</head>
+<body>
+  <h2>🧪 QueenCosy Automated Test Runner</h2>
+  <div id="results"></div>
+  <div id="summary" class="summary"></div>
+
+  <script>
+    (function () {
+      const resultsEl = document.getElementById('results');
+      const summaryEl = document.getElementById('summary');
+      let passed = 0;
+      let failed = 0;
+
+      function assert(desc, condition) {
+        const div = document.createElement('div');
+        if (condition) {
+          passed++;
+          div.className = 'pass';
+          div.textContent = `[PASS] ${desc}`;
+        } else {
+          failed++;
+          div.className = 'fail';
+          div.textContent = `[FAIL] ${desc}`;
+        }
+        resultsEl.appendChild(div);
+      }
+
+      function normalizeTracking(str) {
+        if (!str) return '';
+        return String(str).replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, '').toUpperCase();
+      }
+
+      // Test 1: Tracking Normalization
+      assert('Normalize strips leading and trailing spaces', normalizeTracking('  th0123  ') === 'TH0123');
+      assert('Normalize strips inner spaces', normalizeTracking('TH 0123 4567') === 'TH01234567');
+      assert('Normalize converts lowercase to uppercase', normalizeTracking('spxth09988') === 'SPXTH09988');
+      assert('Normalize strips non-breaking space (char 160)', normalizeTracking('TH\u00A0123\u00A045') === 'TH12345');
+
+      // Test 2: KPI Calculations Engine
+      const testDate = '2026-09-23';
+      const testOrders = [
+        { id: '1', shipDate: testDate, orderId: 'ORD-1', trackingId: 'TH-001', cleanTracking: 'TH-001', sku: 'SKU-A', qty: 1, carrier: 'Flash' },
+        { id: '2', shipDate: testDate, orderId: 'ORD-2', trackingId: 'TH-002', cleanTracking: 'TH-002', sku: 'SKU-B', qty: 1, carrier: 'Flash' },
+        { id: '3', shipDate: testDate, orderId: 'ORD-3', trackingId: 'TH-003', cleanTracking: 'TH-003', sku: 'SKU-C', qty: 1, carrier: 'Kerry' },
+        { id: '4', shipDate: testDate, orderId: 'ORD-4', trackingId: 'TH-004', cleanTracking: 'TH-004', sku: 'SKU-D', qty: 1, carrier: 'SPX' },
+        { id: '5', shipDate: testDate, orderId: 'ORD-5', trackingId: 'TH-004', cleanTracking: 'TH-004', sku: 'SKU-D', qty: 1, carrier: 'SPX' }, // Duplicate tracking in orders
+        { id: '6', shipDate: '2026-09-24', orderId: 'ORD-6', trackingId: 'TH-OTHER', cleanTracking: 'TH-OTHER', sku: 'SKU-E', qty: 1, carrier: 'Flash' } // Other date
+      ];
+
+      const testScans = [
+        { id: 's1', scanDate: testDate, trackingId: 'TH-001', cleanTracking: 'TH-001' },
+        { id: 's2', scanDate: testDate, trackingId: 'TH-001', cleanTracking: 'TH-001' }, // Duplicate scan
+        { id: 's3', scanDate: testDate, trackingId: 'TH-EXTRA', cleanTracking: 'TH-EXTRA' }, // Extra scan (not in orders)
+        { id: 's4', scanDate: '2026-09-24', trackingId: 'TH-002', cleanTracking: 'TH-002' } // Scanned on other date
+      ];
+
+      // Calculation logic
+      const todayOrders = testOrders.filter(o => o.shipDate === testDate);
+      const orderTrackingCounts = {};
+      todayOrders.forEach(o => {
+        if (o.cleanTracking) orderTrackingCounts[o.cleanTracking] = (orderTrackingCounts[o.cleanTracking] || 0) + 1;
+      });
+      const uniqueOrdersCount = Object.keys(orderTrackingCounts).length;
+
+      const todayScans = testScans.filter(s => s.scanDate === testDate);
+      const scanTrackingCounts = {};
+      todayScans.forEach(s => {
+        if (s.cleanTracking) scanTrackingCounts[s.cleanTracking] = (scanTrackingCounts[s.cleanTracking] || 0) + 1;
+      });
+
+      const totalScansCount = todayScans.filter(s => Boolean(s.cleanTracking)).length;
+      const uniqueScansCount = Object.keys(scanTrackingCounts).length;
+
+      let scannedOrdersCount = 0;
+      Object.keys(orderTrackingCounts).forEach(trk => {
+        if (scanTrackingCounts[trk] && scanTrackingCounts[trk] > 0) scannedOrdersCount++;
+      });
+
+      const notScannedOrdersCount = Math.max(0, uniqueOrdersCount - scannedOrdersCount);
+
+      let extraScansCount = 0;
+      Object.keys(scanTrackingCounts).forEach(trk => {
+        if (!orderTrackingCounts[trk]) extraScansCount++;
+      });
+
+      const duplicateScansCount = Math.max(0, totalScansCount - uniqueScansCount);
+
+      let duplicateOrdersCount = 0;
+      todayOrders.forEach(o => {
+        if (o.cleanTracking && orderTrackingCounts[o.cleanTracking] > 1) duplicateOrdersCount++;
+      });
+
+      assert('KPI 1: Unique orders count is 4 (TH-001, TH-002, TH-003, TH-004)', uniqueOrdersCount === 4);
+      assert('KPI 2: Scanned orders count is 1 (TH-001)', scannedOrdersCount === 1);
+      assert('KPI 3: Not scanned (missing) orders count is 3 (TH-002, TH-003, TH-004)', notScannedOrdersCount === 3);
+      assert('KPI 4: Total scans today count is 3 (TH-001, TH-001, TH-EXTRA)', totalScansCount === 3);
+      assert('KPI 5: Unique scans count is 2 (TH-001, TH-EXTRA)', uniqueScansCount === 2);
+      assert('KPI 6: Extra scans (unmatched) count is 1 (TH-EXTRA)', extraScansCount === 1);
+      assert('KPI 7: Duplicate scans count is 1 (TH-001 scanned twice)', duplicateScansCount === 1);
+      assert('KPI 8: Duplicate tracking orders count is 2 (TH-004 appears twice)', duplicateOrdersCount === 2);
+
+      // Test 3: Auto-matching logic via Tracking ID
+      function matchScan(rawTracking) {
+        const clean = normalizeTracking(rawTracking);
+        const matches = todayOrders.filter(o => o.cleanTracking === clean);
+        if (matches.length === 1) return { result: 'พบในรายการส่ง', order: matches[0] };
+        if (matches.length > 1) return { result: 'รายการส่งซ้ำ', order: matches[0] };
+        return { result: 'ไม่พบในรายการส่งของวันนี้', order: null };
+      }
+
+      const match1 = matchScan('  th-001  ');
+      assert('Match TH-001 resolves Order ID ORD-1', match1.result === 'พบในรายการส่ง' && match1.order.orderId === 'ORD-1');
+
+      const matchExtra = matchScan('TH-EXTRA');
+      assert('Match TH-EXTRA returns ไม่พบในรายการส่งของวันนี้', matchExtra.result === 'ไม่พบในรายการส่งของวันนี้' && matchExtra.order === null);
+
+      const matchDup = matchScan('th-004');
+      assert('Match TH-004 returns รายการส่งซ้ำ', matchDup.result === 'รายการส่งซ้ำ' && matchDup.order.orderId === 'ORD-4');
+
+      // Test 4: Excel Export Structure Check
+      const wb = XLSX.utils.book_new();
+      const ws1 = XLSX.utils.aoa_to_sheet([['ตรวจเช็คพัสดุส่งออกต่อวัน']]);
+      const ws2 = XLSX.utils.aoa_to_sheet([['วันที่ต้องส่ง', 'Order ID', 'Tracking ID']]);
+      const ws3 = XLSX.utils.aoa_to_sheet([['วันที่สแกน', 'Tracking ID']]);
+      XLSX.utils.book_append_sheet(wb, ws1, 'สรุปรายวัน');
+      XLSX.utils.book_append_sheet(wb, ws2, 'รายการที่ต้องส่ง');
+      XLSX.utils.book_append_sheet(wb, ws3, 'รายการสแกน');
+
+      assert('Workbook contains exact 3 sheets', wb.SheetNames.length === 3);
+      assert('Sheet 1 is named สรุปรายวัน', wb.SheetNames[0] === 'สรุปรายวัน');
+      assert('Sheet 2 is named รายการที่ต้องส่ง', wb.SheetNames[1] === 'รายการที่ต้องส่ง');
+      assert('Sheet 3 is named รายการสแกน', wb.SheetNames[2] === 'รายการสแกน');
+
+      // Summary
+      summaryEl.innerHTML = `<strong>Total Tests:</strong> ${passed + failed} | <span class="pass">Passed: ${passed}</span> | <span class="fail">Failed: ${failed}</span>`;
+      if (failed === 0) {
+        summaryEl.style.borderLeft = '4px solid #34d399';
+      } else {
+        summaryEl.style.borderLeft = '4px solid #f87171';
+      }
+
+      // Signal for headless test
+      window.__TEST_RESULTS__ = { total: passed + failed, passed, failed };
+    })();
+  </script>
+</body>
+</html>

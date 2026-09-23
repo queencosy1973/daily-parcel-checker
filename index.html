@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>QueenCosy - ระบบตรวจเช็คพัสดุส่งออกต่อวัน</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- SheetJS CDN (Local Vendor) -->
+  <script src="xlsx.full.min.js"></script>
+
+  <!-- HTML5-QRCode CDN (Local Vendor) -->
+  <script src="html5-qrcode.min.js"></script>
+
+  <!-- QRCode.js CDN (Local Vendor) -->
+  <script src="qrcode.min.js"></script>
+
+  <!-- Supabase JS CDN (Local Vendor) -->
+  <script src="supabase.min.js"></script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="style.css">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfdf5',
+              100: '#d1fae5',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857'
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+  <!-- TOP HEADER -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs no-print">
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
+      
+      <!-- Brand & Title -->
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 via-teal-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-emerald-600/20 font-bold text-lg">
+          QC
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.0 Mobile Sync</span>
+          </div>
+          <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ป้องกันของตกหล่น และตรวจจับบาร์โค้ดสแกนซ้ำแบบเรียลไทม์</p>
+        </div>
+      </div>
+
+      <!-- Date Selector -->
+      <div class="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 shadow-2xs">
+        <button id="btn-prev-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันก่อนหน้า">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i>
+        </button>
+        <div class="flex items-center px-2 gap-1.5">
+          <i data-lucide="calendar" class="w-4 h-4 text-emerald-600"></i>
+          <input type="date" id="selected-date" class="bg-transparent border-none text-xs sm:text-sm font-bold text-slate-800 focus:outline-none cursor-pointer">
+        </div>
+        <button id="btn-next-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันถัดไป">
+          <i data-lucide="chevron-right" class="w-4 h-4"></i>
+        </button>
+        <button id="btn-today-date" class="px-2 py-1 text-[11px] font-semibold bg-white rounded-lg text-emerald-700 border border-slate-200 ml-1 hover:bg-emerald-50 transition">
+          วันนี้
+        </button>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex items-center gap-1.5 flex-wrap">
+        <button id="btn-open-mobile-qr" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition shadow-2xs">
+          <i data-lucide="qr-code" class="w-3.5 h-3.5"></i>
+          <span class="hidden sm:inline">เชื่อมต่อ</span>มือถือ
+        </button>
+        <button id="btn-open-import" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition shadow-2xs">
+          <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-emerald-600"></i>
+          นำเข้า Excel
+        </button>
+        <button id="btn-export-excel" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-2xs">
+          <i data-lucide="download" class="w-3.5 h-3.5"></i>
+          ส่งออก Excel
+        </button>
+        <button id="btn-load-demo" class="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 hover:bg-slate-100 transition border border-slate-200" title="โหลดข้อมูลจำลองเพื่อทดสอบระบบ">
+          <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-500"></i>
+          <span class="hidden md:inline">ข้อมูลตัวอย่าง</span>
+        </button>
+        <button id="btn-clear-all" class="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg transition" title="ล้างข้อมูลทั้งหมด">
+          <i data-lucide="trash-2" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 border-t border-slate-100 flex gap-4 sm:gap-8 overflow-x-auto no-scrollbar">
+      <button class="tab-button active py-2.5 text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap transition-colors" data-tab="tab-summary">
+        <i data-lucide="layout-dashboard" class="w-4 h-4 text-emerald-600"></i>
+        แท็บ 1: สรุปรายวัน (KPIs)
+      </button>
+      <button class="tab-button py-2.5 text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap transition-colors" data-tab="tab-orders">
+        <i data-lucide="package" class="w-4 h-4 text-blue-600"></i>
+        แท็บ 2: รายการที่ต้องส่ง (คำสั่งซื้อ)
+      </button>
+      <button class="tab-button py-2.5 text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap transition-colors" data-tab="tab-scan">
+        <i data-lucide="scan-line" class="w-4 h-4 text-amber-600"></i>
+        แท็บ 3: จุดสแกนพัสดุสด (Scanner)
+      </button>
+    </div>
+  </header>
+
+  <!-- Remote Scan Toast Notification -->
+  <div id="desktop-remote-toast" class="hidden fixed bottom-5 right-5 z-50 px-4 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-xl shadow-xl flex items-center gap-2 border border-slate-700 animate-bounce">
+    📲 ได้รับข้อมูลสแกนใหม่
+  </div>
+
+  <!-- MAIN VIEWPORT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-6 lg:p-8 space-y-6">
+
+    <!-- ========================================================================= -->
+    <!-- TAB 1: สรุปรายวัน (DAILY SUMMARY DASHBOARD) -->
+    <!-- ========================================================================= -->
+    <section id="tab-summary" class="space-y-6">
+      
+      <!-- Progress Bar & Milestone Card -->
+      <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <h2 class="text-sm sm:text-base font-bold text-slate-900">ความคืบหน้าการตรวจพัสดุขึ้นรถประจำวัน</h2>
+            </div>
+            <p id="progress-bar-detail" class="text-xs text-slate-500 mt-0.5">ส่งมอบแล้ว 0 จาก 0 กล่อง</p>
+          </div>
+          <div class="text-right">
+            <span id="progress-bar-text" class="text-2xl sm:text-3xl font-bold font-mono text-emerald-600">0.0%</span>
+          </div>
+        </div>
+        <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden p-0.5 border border-slate-200">
+          <div id="progress-bar-fill" class="bg-gradient-to-r from-emerald-500 to-teal-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <!-- 9 KPIs GRID (Exact Google Sheet Formulas Replication) -->
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3 sm:gap-4">
+        
+        <!-- 1. พัสดุต้องส่ง (Tracking ไม่ซ้ำ) -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-slate-500 mb-1">
+            <span class="text-xs font-medium">1. พัสดุต้องส่ง (ไม่ซ้ำ)</span>
+            <i data-lucide="package" class="w-4 h-4 text-blue-500"></i>
+          </div>
+          <div id="kpi-unique-orders" class="text-2xl sm:text-3xl font-bold font-mono text-slate-900">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">เป้าหมายส่งวันนี้ (กล่อง)</div>
+        </div>
+
+        <!-- 2. พบสแกนตรงวันแล้ว (พัสดุ) -->
+        <div class="bg-white rounded-xl p-4 border border-emerald-200 bg-emerald-50/20 shadow-2xs">
+          <div class="flex items-center justify-between text-emerald-700 mb-1">
+            <span class="text-xs font-semibold">2. พบสแกนตรงวันแล้ว</span>
+            <i data-lucide="check-circle" class="w-4 h-4 text-emerald-600"></i>
+          </div>
+          <div id="kpi-scanned-orders" class="text-2xl sm:text-3xl font-bold font-mono text-emerald-600">0</div>
+          <div class="text-[11px] text-emerald-600/80 mt-1">สแกนผ่านเรียบร้อย (กล่อง)</div>
+        </div>
+
+        <!-- 3. ยังไม่สแกน / ตกหล่น (พัสดุ) - CRITICAL ALERT -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs transition-all">
+          <div class="flex items-center justify-between text-rose-600 mb-1">
+            <span class="text-xs font-bold flex items-center gap-1">
+              <i data-lucide="alert-octagon" class="w-3.5 h-3.5"></i>
+              3. ยังไม่สแกน (ตกหล่น)
+            </span>
+            <span class="px-1.5 py-0.2 text-[10px] font-bold rounded bg-rose-100 text-rose-700">สำคัญ</span>
+          </div>
+          <div id="kpi-missing-orders" class="text-2xl sm:text-3xl font-bold font-mono text-rose-600">0</div>
+          <div class="text-[11px] text-rose-500 mt-1">ต้องรีบตามกล่องก่อนรถออก!</div>
+        </div>
+
+        <!-- 4. สแกนทั้งหมด (ครั้ง) -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-slate-500 mb-1">
+            <span class="text-xs font-medium">4. สแกนทั้งหมด (ครั้ง)</span>
+            <i data-lucide="scan" class="w-4 h-4 text-slate-500"></i>
+          </div>
+          <div id="kpi-total-scans" class="text-2xl sm:text-3xl font-bold font-mono text-slate-800">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">จำนวนครั้งที่กดสแกน</div>
+        </div>
+
+        <!-- 5. สแกนเลขไม่ซ้ำ (พัสดุ) -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-slate-500 mb-1">
+            <span class="text-xs font-medium">5. สแกนเลขไม่ซ้ำ</span>
+            <i data-lucide="hash" class="w-4 h-4 text-indigo-500"></i>
+          </div>
+          <div id="kpi-unique-scans" class="text-2xl sm:text-3xl font-bold font-mono text-indigo-600">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">นับเฉพาะรหัสไม่ซ้ำ (กล่อง)</div>
+        </div>
+
+        <!-- 6. สแกนเกินรายการส่ง (พัสดุ) -->
+        <div class="bg-white rounded-xl p-4 border border-amber-200 bg-amber-50/20 shadow-2xs">
+          <div class="flex items-center justify-between text-amber-700 mb-1">
+            <span class="text-xs font-semibold">6. สแกนเกินรายการส่ง</span>
+            <i data-lucide="help-circle" class="w-4 h-4 text-amber-500"></i>
+          </div>
+          <div id="kpi-extra-scans" class="text-2xl sm:text-3xl font-bold font-mono text-amber-600">0</div>
+          <div class="text-[11px] text-amber-600/80 mt-1">ของไม่มีในรายการ/ส่งผิดวัน</div>
+        </div>
+
+        <!-- 7. สแกนซ้ำในวันเดียวกัน (ครั้งเกิน) -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-purple-600 mb-1">
+            <span class="text-xs font-medium">7. สแกนซ้ำวันเดียวกัน</span>
+            <i data-lucide="repeat" class="w-4 h-4 text-purple-500"></i>
+          </div>
+          <div id="kpi-duplicate-scans" class="text-2xl sm:text-3xl font-bold font-mono text-purple-600">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">ยิงซ้ำกล่องเดิม (ครั้งเกิน)</div>
+        </div>
+
+        <!-- 8. แถวรายการส่งที่ Tracking ซ้ำ -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-rose-600 mb-1">
+            <span class="text-xs font-medium">8. Tracking ซ้ำในคำสั่งซื้อ</span>
+            <i data-lucide="copy" class="w-4 h-4 text-rose-400"></i>
+          </div>
+          <div id="kpi-duplicate-orders" class="text-2xl sm:text-3xl font-bold font-mono text-slate-800">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">พบเลขพัสดุซ้ำในไฟล์ต้นทาง</div>
+        </div>
+
+        <!-- 9. ข้อมูลไม่ครบ / จำนวนผิด (ทุกวัน) -->
+        <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+          <div class="flex items-center justify-between text-slate-500 mb-1">
+            <span class="text-xs font-medium">9. ข้อมูลไม่ครบ/จำนวนผิด</span>
+            <i data-lucide="file-warning" class="w-4 h-4 text-slate-400"></i>
+          </div>
+          <div id="kpi-invalid-data" class="text-2xl sm:text-3xl font-bold font-mono text-slate-700">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">ไม่มีวันที่/ไม่มีเลข/จำนวน<=0</div>
+        </div>
+
+      </div>
+
+      <!-- Quick Action Guide & Operational Rules -->
+      <div class="bg-white rounded-2xl p-4 sm:p-6 border border-slate-200 shadow-xs">
+        <h3 class="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+          <i data-lucide="info" class="w-4 h-4 text-emerald-600"></i>
+          วิธีใช้งานและข้อกำหนดการตรวจเช็คพัสดุ
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600 leading-relaxed">
+          <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-1.5">
+            <div class="font-bold text-slate-800">1. การเตรียมรายการส่ง</div>
+            <p>นำเข้ารายการคำสั่งซื้อประจำวันผ่านปุ่ม "นำเข้า Excel" หรือวางจากตาราง Excel ในแท็บที่ 2 โดยมี Order ID, Tracking ID, SKU, จำนวนชิ้น</p>
+          </div>
+          <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-1.5">
+            <div class="font-bold text-slate-800">2. การสแกนลาเบลหน้ารถ</div>
+            <p>เจ้าหน้าที่สามารถใช้เครื่องยิงบาร์โค้ด (Barcode Gun) หรือกล้องมือถือสแกนเฉพาะ **Tracking ID** บนลาเบลกล่อง ระบบจะวิ่งไปค้นหาคำสั่งซื้อให้อัตโนมัติ</p>
+          </div>
+          <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-1.5">
+            <div class="font-bold text-slate-800">3. การตรวจเช็คก่อนปล่อยรถ</div>
+            <p>ก่อนปล่อยรถขนส่ง ดูตัวเลข **"3. ยังไม่สแกน (ตกหล่น)"** ต้องเป็น **0** เสมอ หากมีตัวเลขให้กดดูเฉพาะรายการตกหล่นเพื่อตามสินค้าทันที</p>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 2: รายการที่ต้องส่ง (OUTGOING ORDERS TABLE) -->
+    <!-- ========================================================================= -->
+    <section id="tab-orders" class="space-y-4 hidden">
+      
+      <!-- Filter Bar -->
+      <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+        
+        <!-- Search & Carrier -->
+        <div class="flex items-center gap-2 flex-1 flex-wrap">
+          <div class="relative flex-1 min-w-[200px]">
+            <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input type="text" id="input-search-orders" placeholder="ค้นหา Order ID, Tracking ID, SKU, ขนส่ง..." class="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 bg-slate-50">
+          </div>
+          <select id="filter-carrier" class="py-2 px-3 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:outline-none text-slate-700 font-medium">
+            <option value="all">ขนส่งทั้งหมด</option>
+          </select>
+        </div>
+
+        <!-- Filter Pills -->
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <button class="filter-pill active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition flex items-center gap-1.5" data-filter="all">
+            ทั้งหมด (<span id="badge-count-all">0</span>)
+          </button>
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5" data-filter="missing">
+            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+            ยังไม่สแกน (<span id="badge-count-missing">0</span>)
+          </button>
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5" data-filter="scanned">
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            สแกนแล้ว (<span id="badge-count-scanned">0</span>)
+          </button>
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition" data-filter="issues">
+            มีปัญหา
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Orders Table -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                <th class="py-3 px-3.5 text-center w-12">#</th>
+                <th class="py-3 px-3.5 min-w-[140px]">Order ID</th>
+                <th class="py-3 px-3.5 min-w-[160px]">Tracking ID</th>
+                <th class="py-3 px-3.5 min-w-[200px]">SKU สินค้า (รวมต่อกล่อง)</th>
+                <th class="py-3 px-3.5 text-center w-16">จำนวน</th>
+                <th class="py-3 px-3.5 min-w-[100px]">ขนส่ง</th>
+                <th class="py-3 px-3.5 min-w-[100px]">ผู้จัดสินค้า</th>
+                <th class="py-3 px-3.5 text-center min-w-[140px]">ผลตรวจพัสดุ</th>
+                <th class="py-3 px-3.5 text-center w-12"></th>
+              </tr>
+            </thead>
+            <tbody id="orders-table-body" class="divide-y divide-slate-100">
+              <!-- Rendered via app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ========================================================================= -->
+    <!-- TAB 3: จุดสแกนพัสดุสด (LIVE BARCODE SCANNER HUD) -->
+    <!-- ========================================================================= -->
+    <section id="tab-scan" class="space-y-6 hidden">
+      
+      <!-- Scanner Cockpit Header -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        
+        <!-- Left: Scanner Controls & Gun Input -->
+        <div class="lg:col-span-1 space-y-4">
+          
+          <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-4">
+            
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold">
+                  <i data-lucide="barcode" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h2 class="text-sm font-bold text-slate-900 leading-tight">โหมดยิงสแกนเนอร์</h2>
+                  <p class="text-[11px] text-slate-400">ปืนสแกน & กล้องมือถือ</p>
+                </div>
+              </div>
+              <button id="btn-refocus-gun" class="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-slate-100 rounded-lg transition" title="คลิกเพื่อให้เคอร์เซอร์พร้อมยิงบาร์โค้ด">
+                <i data-lucide="crosshair" class="w-4 h-4"></i>
+              </button>
+            </div>
+
+            <!-- Operator Name Input -->
+            <div>
+              <label class="block text-[11px] font-bold text-slate-500 uppercase mb-1">ผู้สแกน / ประจำจุด</label>
+              <input type="text" id="input-scanner-name" value="เจ้าหน้าที่คลัง" class="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:border-emerald-500 font-medium">
+            </div>
+
+            <!-- Barcode Gun Direct Input Field -->
+            <div>
+              <label class="block text-[11px] font-bold text-emerald-700 uppercase mb-1 flex items-center justify-between">
+                <span>ช่องรับข้อมูลปืนสแกน (Barcode Gun)</span>
+                <span class="text-[10px] text-emerald-600 font-normal">กด Enter อัตโนมัติ</span>
+              </label>
+              <div class="relative">
+                <input type="text" id="input-barcode-gun" placeholder="ส่องปืนยิงบาร์โค้ดที่นี่..." autofocus class="w-full pl-3 pr-10 py-3 text-sm font-mono font-bold tracking-wider rounded-xl border-2 border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-100 bg-emerald-50/20 text-slate-900 placeholder:text-slate-400">
+                <div class="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600">
+                  <i data-lucide="scan-barcode" class="w-5 h-5 animate-pulse"></i>
+                </div>
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1">💡 สำหรับปืนยิงบาร์โค้ด USB/ไร้สาย ยิงได้ทันทีโดยไม่ต้องคลิกเมาส์</p>
+            </div>
+
+            <div class="border-t border-slate-100 pt-3">
+              <button id="btn-toggle-camera" class="w-full py-2.5 px-4 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition flex items-center justify-center gap-2">
+                <i data-lucide="camera" class="w-4 h-4"></i>
+                เปิดกล้องสแกนเนอร์
+              </button>
+            </div>
+
+          </div>
+
+          <!-- Camera Viewfinder Box -->
+          <div id="camera-box" class="hidden overflow-hidden rounded-2xl border-2 border-emerald-500 bg-black relative shadow-lg">
+            <div id="reader"></div>
+            <div class="p-2.5 bg-slate-900 text-white text-[11px] text-center font-medium flex items-center justify-center gap-1.5">
+              <i data-lucide="scan" class="w-3.5 h-3.5 text-emerald-400"></i>
+              ส่องกรอบกล้องไปที่บาร์โค้ดลาเบลขนส่ง
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right: Real-time Feedback HUD & Recent Scan Stream -->
+        <div class="lg:col-span-2 space-y-4">
+          
+          <!-- Scan HUD Display Banner -->
+          <div id="scan-hud-banner" class="p-4 rounded-2xl border-2 border-slate-200 bg-white flex items-start gap-3 shadow-xs">
+            <div class="shrink-0 mt-0.5 text-slate-400">
+              <i data-lucide="info" class="w-6 h-6"></i>
+            </div>
+            <div>
+              <div class="font-bold text-sm sm:text-base text-slate-800">พร้อมรับการสแกนบาร์โค้ด</div>
+              <div class="text-xs text-slate-500 mt-0.5">ใช้ปืนสแกนเนอร์หรือเปิดกล้องเพื่อตรวจเช็คพัสดุขึ้นรถ</div>
+            </div>
+          </div>
+
+          <!-- Recent Scans Stream Table -->
+          <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div class="p-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h3 class="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                <i data-lucide="history" class="w-4 h-4 text-slate-400"></i>
+                ประวัติการสแกนล่าสุดประจำวัน
+              </h3>
+              <span class="text-[11px] text-slate-400">เรียงตามเวลาล่าสุด</span>
+            </div>
+            <div class="overflow-x-auto max-h-[460px] overflow-y-auto">
+              <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase">
+                  <tr>
+                    <th class="py-2.5 px-3.5 text-center w-12">#</th>
+                    <th class="py-2.5 px-3.5 w-24">เวลา</th>
+                    <th class="py-2.5 px-3.5 min-w-[150px]">Tracking ID</th>
+                    <th class="py-2.5 px-3.5 min-w-[140px]">Order ID ที่จับคู่ได้</th>
+                    <th class="py-2.5 px-3.5 min-w-[180px]">สินค้า</th>
+                    <th class="py-2.5 px-3.5 min-w-[110px]">ผู้สแกน</th>
+                    <th class="py-2.5 px-3.5 text-center min-w-[130px]">ผลจับคู่</th>
+                  </tr>
+                </thead>
+                <tbody id="scans-table-body" class="divide-y divide-slate-100">
+                  <!-- Rendered via app.js -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- MODAL 1: EXCEL & CLIPBOARD IMPORT -->
+  <!-- ========================================================================= -->
+  <div id="modal-import" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl space-y-4">
+      
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+            <i data-lucide="file-up" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-900">นำเข้ารายการคำสั่งซื้อที่ต้องส่ง</h3>
+            <p class="text-[11px] text-slate-500">คัดลอกจากตาราง Excel แล้ววาง หรืออัปโหลดไฟล์ .xlsx / .csv</p>
+          </div>
+        </div>
+        <button id="btn-close-import" class="p-1 text-slate-400 hover:text-slate-600 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- File Upload Option -->
+      <div class="p-3 bg-slate-50 rounded-xl border border-dashed border-slate-300 text-center">
+        <label class="cursor-pointer inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition shadow-2xs">
+          <i data-lucide="upload" class="w-4 h-4 text-emerald-600"></i>
+          เลือกไฟล์ Excel (.xlsx / .csv)
+          <input type="file" id="file-import-excel" accept=".xlsx, .xls, .csv" class="hidden">
+        </label>
+        <span class="text-xs text-slate-400 ml-2">หรือวางข้อมูลลงในช่องด้านล่าง</span>
+      </div>
+
+      <!-- Textarea for Pasting from Excel -->
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">
+          วางตารางที่คัดลอกจาก Excel (A:H):
+        </label>
+        <textarea id="textarea-import-data" rows="7" placeholder="วันที่ | Order ID | Tracking ID | SKU สินค้า | จำนวนชิ้น | ขนส่ง | ผู้จัดสินค้า" class="w-full p-3 text-xs font-mono rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 bg-slate-50 leading-relaxed"></textarea>
+        <p class="text-[11px] text-slate-400 mt-1">คัดลอกแถวจาก Excel มาวางได้เลย ระบบจะแยกคอลัมน์ให้อัตโนมัติ</p>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button onclick="document.getElementById('modal-import').classList.add('hidden')" class="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition">
+          ยกเลิก
+        </button>
+        <button id="btn-apply-import" class="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition">
+          บันทึกรายการคำสั่งซื้อ
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MODAL 2: MOBILE QR CODE CONNECT -->
+  <!-- ========================================================================= -->
+  <div id="modal-mobile-qr" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl text-center space-y-4">
+      
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-bold text-slate-900">📲 สแกน QR เพื่อเปิดกล้องบนมือถือ</h3>
+        <button id="btn-close-mobile-qr" class="p-1 text-slate-400 hover:text-slate-600 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="p-4 bg-slate-50 rounded-2xl flex flex-col items-center justify-center border border-slate-100">
+        <div id="qr-code-display" class="bg-white p-3 rounded-xl shadow-xs"></div>
+        <p class="text-[11px] text-slate-500 mt-3 font-medium">
+          ใช้กล้องมือถือสแกน QR Code นี้เพื่อเปิดหน้าจอยิงบาร์โค้ดหน้ารถ
+        </p>
+      </div>
+
+      <div class="text-[10px] text-slate-400 font-mono break-all" id="qr-url-text"></div>
+
+      <button onclick="document.getElementById('modal-mobile-qr').classList.add('hidden')" class="w-full py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
+        ปิดหน้าต่าง
+      </button>
+
+    </div>
+  </div>
+
+  <!-- Core Scripts -->
+  <script src="audio-feedback.js"></script>
+  <script src="camera-scanner.js"></script>
+  <script src="sync-service.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
