@@ -991,15 +991,28 @@
             const data = new Uint8Array(evt.target.result);
             const workbook = XLSX.read(data, { type: 'array' });
 
+            if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+              alert('ไม่พบแผ่นงาน (Sheet) ในไฟล์ Excel ที่เลือก');
+              return;
+            }
+
             // Look for sheet 'รายการที่ต้องส่ง', 'orders', 'คำสั่งซื้อ' or first sheet
             let sheetName = workbook.SheetNames.find((s) => 
-              s.includes('รายการที่ต้องส่ง') || 
-              s.toLowerCase().includes('order') || 
-              s.includes('คำสั่งซื้อ')
+              typeof s === 'string' && (
+                s.includes('รายการที่ต้องส่ง') || 
+                s.toLowerCase().includes('order') || 
+                s.includes('คำสั่งซื้อ')
+              )
             ) || workbook.SheetNames[0];
 
             const worksheet = workbook.Sheets[sheetName];
-            const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            if (!worksheet) {
+              alert('ไม่สามารถอ่านข้อมูลแผ่นงานในไฟล์ได้');
+              return;
+            }
+
+            // defval: '' guarantees all empty cells are dense empty strings rather than sparse holes
+            const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
 
             const newOrders = parseExcelRows(rows);
             if (newOrders.length > 0) {
@@ -1103,23 +1116,36 @@
   }
 
   function resolveColumnIndices(headerRow) {
-    if (!Array.isArray(headerRow)) return null;
+    if (!headerRow) return null;
 
-    const headers = headerRow.map((h) => String(h || '').trim().toLowerCase().replace(/[\*\_\-]/g, ' '));
+    // Convert sparse array / array-like to dense array of clean strings safely
+    const len = headerRow.length || 0;
+    const headers = [];
+    for (let i = 0; i < len; i++) {
+      const val = headerRow[i];
+      headers.push(String(val !== null && val !== undefined ? val : '').trim().toLowerCase().replace(/[\*\_\-]/g, ' '));
+    }
 
     const findExactOrInc = (patterns, excludes = []) => {
+      if (!Array.isArray(patterns)) return -1;
+      const safeExcludes = Array.isArray(excludes) ? excludes.filter((ex) => typeof ex === 'string') : [];
+
       // 1. Exact match first
       for (const p of patterns) {
+        if (typeof p !== 'string') continue;
         const idx = headers.findIndex((h) => {
-          if (excludes.some((ex) => h.includes(ex))) return false;
+          if (!h || typeof h !== 'string') return false;
+          if (safeExcludes.some((ex) => ex && h.includes(ex))) return false;
           return h === p;
         });
         if (idx !== -1) return idx;
       }
       // 2. Includes match
       for (const p of patterns) {
+        if (typeof p !== 'string') continue;
         const idx = headers.findIndex((h) => {
-          if (excludes.some((ex) => h.includes(ex))) return false;
+          if (!h || typeof h !== 'string') return false;
+          if (safeExcludes.some((ex) => ex && h.includes(ex))) return false;
           return h.includes(p);
         });
         if (idx !== -1) return idx;
@@ -1197,6 +1223,15 @@
   }
 
   function inferColumnIndicesFromData(cols) {
+    if (!cols) return { idxOrder: -1, idxTrack: -1, idxDate: -1, idxSku: -1, idxVariation: -1, idxQty: -1, idxCarrier: -1, idxPacker: -1, idxNotes: -1 };
+
+    const len = cols.length || 0;
+    const denseCols = [];
+    for (let i = 0; i < len; i++) {
+      const val = cols[i];
+      denseCols.push(String(val !== null && val !== undefined ? val : '').trim());
+    }
+
     let idxOrder = -1;
     let idxTrack = -1;
     let idxDate = -1;
@@ -1205,8 +1240,8 @@
     let idxCarrier = -1;
     let idxNotes = -1;
 
-    for (let i = 0; i < cols.length; i++) {
-      const val = String(cols[i] || '').trim();
+    for (let i = 0; i < denseCols.length; i++) {
+      const val = denseCols[i];
       if (!val) continue;
 
       // Date check
@@ -1250,18 +1285,18 @@
       }
     }
 
-    if (idxTrack === -1 && cols.length >= 3) {
+    if (idxTrack === -1 && denseCols.length >= 3) {
       if (idxDate === 0 && idxOrder === 1) idxTrack = 2;
       else if (idxOrder === 0) idxTrack = 1;
     }
 
     return {
       idxOrder: idxOrder !== -1 ? idxOrder : 0,
-      idxTrack: idxTrack !== -1 ? idxTrack : (cols.length >= 2 ? 1 : 0),
+      idxTrack: idxTrack !== -1 ? idxTrack : (denseCols.length >= 2 ? 1 : 0),
       idxDate,
-      idxSku: idxSku !== -1 ? idxSku : (cols.length >= 4 ? 3 : -1),
+      idxSku: idxSku !== -1 ? idxSku : (denseCols.length >= 4 ? 3 : -1),
       idxVariation: -1,
-      idxQty: idxQty !== -1 ? idxQty : (cols.length >= 5 ? 4 : -1),
+      idxQty: idxQty !== -1 ? idxQty : (denseCols.length >= 5 ? 4 : -1),
       idxCarrier,
       idxPacker: -1,
       idxNotes
@@ -1315,8 +1350,9 @@
     // Scan first 10 rows to detect header
     for (let r = 0; r < Math.min(10, rows.length); r++) {
       const candidateRow = rows[r];
-      if (!Array.isArray(candidateRow) || candidateRow.length === 0) continue;
+      if (!candidateRow) continue;
       const candidateIndices = resolveColumnIndices(candidateRow);
+      if (!candidateIndices) continue;
 
       let matchCount = 0;
       if (candidateIndices.idxOrder !== -1) matchCount++;
@@ -1338,7 +1374,7 @@
       dataStartRow = headerRowIdx + 1;
     } else {
       dataStartRow = 0;
-      const firstRow = rows.find((r) => Array.isArray(r) && r.some((c) => String(c).trim() !== ''));
+      const firstRow = rows.find((r) => r && Array.from(r).some((c) => String(c || '').trim() !== ''));
       colIndices = inferColumnIndicesFromData(firstRow || rows[0]);
     }
 
@@ -1347,23 +1383,23 @@
 
     for (let r = dataStartRow; r < rows.length; r++) {
       const row = rows[r];
-      if (!Array.isArray(row) || row.length === 0) continue;
+      if (!row) continue;
 
-      let rawOrder = colIndices.idxOrder !== -1 && row[colIndices.idxOrder] !== undefined ? String(row[colIndices.idxOrder]).trim() : '';
-      let rawTrack = colIndices.idxTrack !== -1 && row[colIndices.idxTrack] !== undefined ? String(row[colIndices.idxTrack]).trim() : '';
-      let rawDate = colIndices.idxDate !== -1 && row[colIndices.idxDate] !== undefined ? String(row[colIndices.idxDate]).trim() : '';
-      let rawSku = colIndices.idxSku !== -1 && row[colIndices.idxSku] !== undefined ? String(row[colIndices.idxSku]).trim() : '';
-      let rawVariation = colIndices.idxVariation !== -1 && row[colIndices.idxVariation] !== undefined ? String(row[colIndices.idxVariation]).trim() : '';
-      let rawCarrier = colIndices.idxCarrier !== -1 && row[colIndices.idxCarrier] !== undefined ? String(row[colIndices.idxCarrier]).trim() : '';
-      let rawPacker = colIndices.idxPacker !== -1 && row[colIndices.idxPacker] !== undefined ? String(row[colIndices.idxPacker]).trim() : '';
-      let rawNotes = colIndices.idxNotes !== -1 && row[colIndices.idxNotes] !== undefined ? String(row[colIndices.idxNotes]).trim() : '';
+      let rawOrder = colIndices.idxOrder !== -1 && row[colIndices.idxOrder] !== undefined ? String(row[colIndices.idxOrder] || '').trim() : '';
+      let rawTrack = colIndices.idxTrack !== -1 && row[colIndices.idxTrack] !== undefined ? String(row[colIndices.idxTrack] || '').trim() : '';
+      let rawDate = colIndices.idxDate !== -1 && row[colIndices.idxDate] !== undefined ? String(row[colIndices.idxDate] || '').trim() : '';
+      let rawSku = colIndices.idxSku !== -1 && row[colIndices.idxSku] !== undefined ? String(row[colIndices.idxSku] || '').trim() : '';
+      let rawVariation = colIndices.idxVariation !== -1 && row[colIndices.idxVariation] !== undefined ? String(row[colIndices.idxVariation] || '').trim() : '';
+      let rawCarrier = colIndices.idxCarrier !== -1 && row[colIndices.idxCarrier] !== undefined ? String(row[colIndices.idxCarrier] || '').trim() : '';
+      let rawPacker = colIndices.idxPacker !== -1 && row[colIndices.idxPacker] !== undefined ? String(row[colIndices.idxPacker] || '').trim() : '';
+      let rawNotes = colIndices.idxNotes !== -1 && row[colIndices.idxNotes] !== undefined ? String(row[colIndices.idxNotes] || '').trim() : '';
 
       // Skip completely empty rows
       if (!rawOrder && !rawTrack && !rawSku) continue;
 
       // Failsafe 1: If rawOrder is a Tracking ID and rawTrack is not, swap them!
-      const isTrackLike = (val) => /^(THT|TH\d|SPXTH|KEX|KER|JNT)/i.test(val) || (/^\d{13,15}$/.test(val) && val.startsWith('66'));
-      const isOrderLike = (val) => /^[0-9A-Za-z]{12,25}$/.test(val) && !isTrackLike(val);
+      const isTrackLike = (val) => Boolean(val && (/^(THT|TH\d|SPXTH|KEX|KER|JNT)/i.test(val) || (/^\d{13,15}$/.test(val) && val.startsWith('66'))));
+      const isOrderLike = (val) => Boolean(val && /^[0-9A-Za-z]{12,25}$/.test(val) && !isTrackLike(val));
 
       if (isTrackLike(rawOrder) && (!rawTrack || isOrderLike(rawTrack) || parseDateCell(rawTrack))) {
         const temp = rawOrder;
@@ -1388,8 +1424,10 @@
 
       // Combine SKU and Variation
       let finalSku = rawSku;
-      if (rawVariation && !finalSku.includes(rawVariation)) {
-        finalSku = finalSku ? `${finalSku} [${rawVariation}]` : rawVariation;
+      if (rawVariation && finalSku && typeof finalSku === 'string' && !finalSku.includes(rawVariation)) {
+        finalSku = `${finalSku} [${rawVariation}]`;
+      } else if (rawVariation && !finalSku) {
+        finalSku = rawVariation;
       }
       if (!finalSku) {
         finalSku = 'โซฟา/เก้าอี้สตูล';
