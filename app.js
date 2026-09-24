@@ -317,10 +317,13 @@
       return 'ตรวจจำนวนสินค้า';
     }
 
-    // Check duplicate in same date's orders
+    // Check duplicate in same date's orders (Only flag if different Order IDs share the same tracking)
     const sameDateOrders = state.orders.filter((o) => o.shipDate === order.shipDate && o.cleanTracking === order.cleanTracking);
     if (sameDateOrders.length > 1) {
-      return 'ตรวจ Tracking ซ้ำ';
+      const diffOrderIds = sameDateOrders.filter((o) => o.orderId !== order.orderId);
+      if (diffOrderIds.length > 0) {
+        return 'ตรวจ Tracking ซ้ำ';
+      }
     }
 
     // Count scans for this tracking on this ship date
@@ -345,18 +348,21 @@
 
     const matchedOrders = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean);
 
-    if (matchedOrders.length === 1) {
-      return {
-        result: 'พบในรายการส่ง',
-        order: matchedOrders[0],
-        statusType: 'matched'
-      };
-    } else if (matchedOrders.length > 1) {
-      return {
-        result: 'รายการส่งซ้ำ',
-        order: matchedOrders[0],
-        statusType: 'dup_order'
-      };
+    if (matchedOrders.length >= 1) {
+      const uniqueOrderIds = new Set(matchedOrders.map((o) => o.orderId));
+      if (uniqueOrderIds.size === 1) {
+        return {
+          result: 'พบในรายการส่ง',
+          order: matchedOrders[0],
+          statusType: 'matched'
+        };
+      } else {
+        return {
+          result: 'รายการส่งซ้ำ',
+          order: matchedOrders[0],
+          statusType: 'dup_order'
+        };
+      }
     } else {
       // Unconditionally return รอนำเข้าออเดอร์ so warehouse staff can scan labels
       // ahead of time, and the system retroactively matches when orders are imported later.
@@ -931,7 +937,7 @@
       });
     }
 
-    // Apply Imported Data
+    // Apply Imported Data (Paste)
     if (btnApply && textarea) {
       btnApply.addEventListener('click', () => {
         const text = textarea.value.trim();
@@ -942,12 +948,22 @@
 
         const newOrders = parsePastedOrders(text);
         if (newOrders.length === 0) {
-          alert('ไม่พบแถวข้อมูลที่ถูกต้อง กรุณาคัดลอกทั้งคอลัมน์จาก Excel (วัน/คำสั่งซื้อ/เลขพัสดุ/สินค้า/จำนวน/ขนส่ง)');
+          alert('ไม่พบแถวข้อมูลที่ถูกต้อง กรุณาคัดลอกข้อมูลจาก Shopee, TikTok, หรือ Excel อีกครั้ง');
           return;
         }
 
-        // Add to state and save
-        state.orders = state.orders.concat(newOrders);
+        // Deduplicate against existing orders in state
+        const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
+        const filteredNewOrders = [];
+        newOrders.forEach((no) => {
+          const key = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
+          if (!existingKeys.has(key)) {
+            existingKeys.add(key);
+            filteredNewOrders.push(no);
+          }
+        });
+
+        state.orders = state.orders.concat(filteredNewOrders);
         const reMatched = reconcileScansAndOrders();
         SyncService.saveLocalOrders(state.orders);
 
@@ -956,14 +972,14 @@
 
         renderAll();
         if (reMatched > 0) {
-          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${newOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
+          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
         } else {
-          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${newOrders.length} รายการ!`);
+          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!`);
         }
       });
     }
 
-    // File Upload Handler
+    // File Upload Handler (.xlsx, .xls, .csv)
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
@@ -975,21 +991,39 @@
             const data = new Uint8Array(evt.target.result);
             const workbook = XLSX.read(data, { type: 'array' });
 
-            // Look for sheet 'รายการที่ต้องส่ง' or first sheet
-            let sheetName = workbook.SheetNames.find((s) => s.includes('รายการที่ต้องส่ง')) || workbook.SheetNames[0];
+            // Look for sheet 'รายการที่ต้องส่ง', 'orders', 'คำสั่งซื้อ' or first sheet
+            let sheetName = workbook.SheetNames.find((s) => 
+              s.includes('รายการที่ต้องส่ง') || 
+              s.toLowerCase().includes('order') || 
+              s.includes('คำสั่งซื้อ')
+            ) || workbook.SheetNames[0];
+
             const worksheet = workbook.Sheets[sheetName];
             const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
 
             const newOrders = parseExcelRows(rows);
             if (newOrders.length > 0) {
-              state.orders = state.orders.concat(newOrders);
+              // Deduplicate against existing orders in state
+              const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
+              const filteredNewOrders = [];
+              newOrders.forEach((no) => {
+                const key = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
+                if (!existingKeys.has(key)) {
+                  existingKeys.add(key);
+                  filteredNewOrders.push(no);
+                }
+              });
+
+              state.orders = state.orders.concat(filteredNewOrders);
               const reMatched = reconcileScansAndOrders();
               SyncService.saveLocalOrders(state.orders);
+              fileInput.value = ''; // Reset input to allow re-upload
+
               renderAll();
               if (reMatched > 0) {
-                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${newOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
+                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
               } else {
-                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${newOrders.length} รายการ!`);
+                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`);
               }
               if (modal) modal.classList.add('hidden');
             } else {
@@ -1015,150 +1049,391 @@
     });
   }
 
-  function parsePastedOrders(text) {
-    const lines = text.split(/\r?\n/);
-    const result = [];
-    const targetDate = state.activeDate;
+  // =========================================================================
+  // UNIFIED SMART IMPORT ENGINE (SHOPEE, TIKTOK SHOP, LAZADA, EXCEL)
+  // =========================================================================
+
+  function detectCarrier(rawTracking, explicitCarrier) {
+    if (explicitCarrier) {
+      const exp = String(explicitCarrier).trim();
+      if (exp && !/^\d+$/.test(exp) && !exp.startsWith('Qs-') && exp !== '1') {
+        return exp;
+      }
+    }
+    const clean = normalizeTracking(rawTracking);
+    if (!clean) return 'Flash Express';
+    if (/^(THT|TH\d{10,}|TH[A-Z0-9]{8,})/i.test(clean)) return 'Flash Express';
+    if (/^SPXTH/i.test(clean)) return 'Shopee Xpress';
+    if (/^\d{14}$/.test(clean)) return 'BEST Express';
+    if (/^(KER|KEX)/i.test(clean)) return 'KEX Express';
+    if (/^(JNT|J&T)/i.test(clean)) return 'J&T Express';
+    return 'Flash Express';
+  }
+
+  function parseDateCell(cellVal) {
+    if (!cellVal) return '';
+    if (typeof cellVal === 'number') {
+      try {
+        const d = XLSX.SSF.parse_date_code(cellVal);
+        if (d && d.y) {
+          return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+        }
+      } catch (e) {}
+    }
+    const str = String(cellVal).trim();
+    if (!str) return '';
+
+    // Match YYYY-MM-DD or YYYY/MM/DD (with optional timestamp)
+    const ym = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (ym) {
+      let y = parseInt(ym[1], 10);
+      if (y > 2500) y -= 543;
+      return `${y}-${String(ym[2]).padStart(2, '0')}-${String(ym[3]).padStart(2, '0')}`;
+    }
+
+    // Match DD/MM/YYYY or DD-MM-YYYY (with optional timestamp)
+    const dm = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dm) {
+      let y = parseInt(dm[3], 10);
+      if (y > 2500) y -= 543; // Buddhist era conversion
+      return `${y}-${String(dm[2]).padStart(2, '0')}-${String(dm[1]).padStart(2, '0')}`;
+    }
+
+    return '';
+  }
+
+  function resolveColumnIndices(headerRow) {
+    if (!Array.isArray(headerRow)) return null;
+
+    const headers = headerRow.map((h) => String(h || '').trim().toLowerCase().replace(/[\*\_\-]/g, ' '));
+
+    const findExactOrInc = (patterns, excludes = []) => {
+      // 1. Exact match first
+      for (const p of patterns) {
+        const idx = headers.findIndex((h) => {
+          if (excludes.some((ex) => h.includes(ex))) return false;
+          return h === p;
+        });
+        if (idx !== -1) return idx;
+      }
+      // 2. Includes match
+      for (const p of patterns) {
+        const idx = headers.findIndex((h) => {
+          if (excludes.some((ex) => h.includes(ex))) return false;
+          return h.includes(p);
+        });
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    // Tracking ID (High specificity, excludes date/time)
+    const idxTrack = findExactOrInc(
+      ['หมายเลขติดตามพัสดุ', 'tracking id', 'tracking number', 'tracking no', 'เลขติดตามพัสดุ', 'เลขพัสดุ', 'หมายเลขพัสดุ', 'tracking', 'waybill', 'airway bill'],
+      ['วัน', 'date', 'เวลา', 'time']
+    );
+
+    // Order ID (High specificity, excludes date/time/tracking/status)
+    const idxOrder = findExactOrInc(
+      ['หมายเลขคำสั่งซื้อ', 'order id', 'รหัสคำสั่งซื้อ', 'order number', 'order no', 'คำสั่งซื้อ', 'เลขออเดอร์', 'หมายเลขออเดอร์', 'เลขที่คำสั่งซื้อ', 'order sn', 'order'],
+      ['วัน', 'date', 'เวลา', 'time', 'สถานะ', 'status', 'tracking', 'พัสดุ']
+    );
+
+    // Ship Date (Prioritize 'วันที่คาดว่าจะทำการจัดส่งสินค้า' or 'วันที่ต้องส่ง')
+    const idxDate = findExactOrInc(
+      ['วันที่คาดว่าจะทำการจัดส่งสินค้า', 'วันที่ต้องส่ง', 'วันที่จัดส่ง', 'ship date', 'shipping date', 'estimated delivery date', 'rts time', 'created time', 'วันที่นัดรับ', 'วันส่งของ', 'วันที่', 'date']
+    );
+
+    // SKU: Tier 1 (Merchant Seller SKU)
+    let idxSku = findExactOrInc([
+      'seller sku', 'เลขอ้างอิง sku (sku reference no.)', 'เลขอ้างอิง sku', 'sku reference no', 'seller_sku', 'รหัสสินค้าผู้ขาย', 'เลขอ้างอิง'
+    ]);
+    if (idxSku === -1) {
+      idxSku = findExactOrInc(
+        ['สินค้า (sku)', 'รหัสสินค้า', 'ชื่อสินค้า', 'product name', 'sku'],
+        ['วัน', 'date', 'เวลา', 'time', 'quantity', 'จำนวน', 'sku id']
+      );
+    }
+    if (idxSku === -1) {
+      idxSku = findExactOrInc(['sku id', 'id สินค้า']);
+    }
+
+    // Variation
+    const idxVariation = findExactOrInc(['ชื่อตัวเลือก', 'variation', 'ตัวเลือก', 'option', 'แบบ']);
+
+    // Quantity (Exclude return / cancel)
+    const idxQty = findExactOrInc(
+      ['จำนวน', 'quantity', 'qty', 'จำนวนสินค้า', 'จำนวนชิ้น'],
+      ['return', 'คืน', 'ยกเลิก', 'cancel']
+    );
+
+    // Carrier
+    const idxCarrier = findExactOrInc(
+      ['shipping provider name', 'shipping provider', 'ผู้ให้บริการจัดส่ง', 'บริษัทขนส่ง', 'ขนส่ง', 'carrier', 'courier', 'delivery option', 'การจัดส่ง'],
+      ['วัน', 'date', 'เวลา', 'time']
+    );
+
+    // Packer
+    const idxPacker = findExactOrInc(
+      ['ผู้จัดสินค้า', 'ทีมแพ็ค', 'คนแพ็ค', 'ผู้แพ็ค', 'packer', 'packed by']
+    );
+
+    // Notes / Order Type
+    const idxNotes = findExactOrInc(
+      ['ประเภทคำสั่งซื้อ', 'normal or pre order', 'normal or pre-order', 'order type', 'หมายเหตุ', 'buyer message', 'seller note', 'บันทึก', 'note', 'notes']
+    );
+
+    return {
+      idxOrder,
+      idxTrack,
+      idxDate,
+      idxSku,
+      idxVariation,
+      idxQty,
+      idxCarrier,
+      idxPacker,
+      idxNotes
+    };
+  }
+
+  function inferColumnIndicesFromData(cols) {
+    let idxOrder = -1;
+    let idxTrack = -1;
+    let idxDate = -1;
+    let idxSku = -1;
+    let idxQty = -1;
+    let idxCarrier = -1;
+    let idxNotes = -1;
+
+    for (let i = 0; i < cols.length; i++) {
+      const val = String(cols[i] || '').trim();
+      if (!val) continue;
+
+      // Date check
+      if (idxDate === -1 && parseDateCell(val)) {
+        idxDate = i;
+        continue;
+      }
+
+      // Tracking ID check: THT..., SPXTH..., 14-digit number like 6677..., or TH+alphanumeric
+      if (idxTrack === -1 && (
+        /^(THT|SPXTH|KEX|KER|JNT)[0-9A-Z]+$/i.test(val) ||
+        (/^TH[0-9A-Z]{8,}$/i.test(val) && !val.includes(' ') && val.length <= 22) ||
+        (/^\d{13,15}$/.test(val) && val.startsWith('66'))
+      )) {
+        idxTrack = i;
+        continue;
+      }
+
+      // Quantity check: 1 to 999
+      if (idxQty === -1 && /^\d{1,3}$/.test(val) && parseInt(val, 10) > 0 && parseInt(val, 10) < 500) {
+        idxQty = i;
+        continue;
+      }
+
+      // Carrier check: known courier name
+      if (idxCarrier === -1 && /^(Flash|BEST|Shopee|SPX|Kerry|KEX|J&T|EMS|ไปรษณีย์)/i.test(val)) {
+        idxCarrier = i;
+        continue;
+      }
+
+      // SKU check: starts with Qs- or model code or furniture keywords
+      if (idxSku === -1 && (/^Qs[\-_]/i.test(val) || val.includes('โซฟา') || val.includes('สตูล') || val.includes('หมอน'))) {
+        idxSku = i;
+        continue;
+      }
+
+      // Order ID: length 12-25 alphanumeric
+      if (idxOrder === -1 && /^[0-9A-Za-z]{12,25}$/.test(val) && !parseDateCell(val)) {
+        idxOrder = i;
+        continue;
+      }
+    }
+
+    if (idxTrack === -1 && cols.length >= 3) {
+      if (idxDate === 0 && idxOrder === 1) idxTrack = 2;
+      else if (idxOrder === 0) idxTrack = 1;
+    }
+
+    return {
+      idxOrder: idxOrder !== -1 ? idxOrder : 0,
+      idxTrack: idxTrack !== -1 ? idxTrack : (cols.length >= 2 ? 1 : 0),
+      idxDate,
+      idxSku: idxSku !== -1 ? idxSku : (cols.length >= 4 ? 3 : -1),
+      idxVariation: -1,
+      idxQty: idxQty !== -1 ? idxQty : (cols.length >= 5 ? 4 : -1),
+      idxCarrier,
+      idxPacker: -1,
+      idxNotes
+    };
+  }
+
+  function textTo2DArray(text) {
+    if (!text || !text.trim()) return [];
+    const lines = text.trim().split(/\r?\n/);
+    const rows = [];
+    const hasTabs = lines.some((l) => l.includes('\t'));
 
     lines.forEach((line) => {
-      const cols = line.split('\t');
-      if (cols.length < 2) return;
-
-      // Skip header row if pasted
-      const col0 = (cols[0] || '').trim();
-      const col1 = (cols[1] || '').trim();
-      const col2 = (cols[2] || '').trim();
-
-      if (col0.includes('วันที่') || col1.includes('Order') || col2.includes('Tracking')) {
-        return;
-      }
-
-      let date = targetDate;
-      let orderId = '';
-      let tracking = '';
-      let sku = '';
-      let qty = 1;
-      let carrier = '';
-      let packer = '';
-      let notes = '';
-
-      if (cols.length >= 6) {
-        // Standard full format (Date, OrderID, TrackingID, SKU, Qty, Carrier, Packer, Notes)
-        date = parseDateCell(cols[0]) || targetDate;
-        orderId = cols[1] ? cols[1].trim() : '';
-        tracking = cols[2] ? cols[2].trim() : '';
-        sku = cols[3] ? cols[3].trim() : '';
-        qty = parseInt(cols[4], 10) || 1;
-        carrier = cols[5] ? cols[5].trim() : '';
-        packer = cols[6] ? cols[6].trim() : '';
-        notes = cols[7] ? cols[7].trim() : '';
-      } else if (cols.length >= 3) {
-        // OrderID, TrackingID, SKU
-        orderId = cols[0].trim();
-        tracking = cols[1].trim();
-        sku = cols[2].trim();
-        qty = parseInt(cols[3], 10) || 1;
-        carrier = cols[4] ? cols[4].trim() : '';
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (hasTabs) {
+        rows.push(line.split('\t').map((c) => c.trim()));
+      } else if (line.includes(',')) {
+        // Parse CSV line with quotes support
+        const cols = [];
+        let inQuotes = false;
+        let cur = '';
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            cols.push(cur.trim());
+            cur = '';
+          } else {
+            cur += char;
+          }
+        }
+        cols.push(cur.trim());
+        rows.push(cols);
       } else {
-        // Just OrderID, Tracking
-        orderId = cols[0].trim();
-        tracking = cols[1].trim();
-      }
-
-      const cleanTrk = normalizeTracking(tracking);
-      if (orderId || cleanTrk) {
-        result.push({
-          id: 'ORD-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
-          shipDate: date,
-          orderId: orderId,
-          trackingId: tracking,
-          cleanTracking: cleanTrk,
-          sku: sku || 'โซฟา/เก้าอี้สตูล',
-          qty: qty,
-          carrier: carrier || 'Flash Express',
-          packer: packer || 'ทีมแพ็ค',
-          notes: notes
-        });
+        rows.push(line.split(/\s{2,}/).map((c) => c.trim()));
       }
     });
 
-    return result;
+    return rows;
   }
 
-  function parseExcelRows(rows) {
-    if (!rows || rows.length < 2) return [];
+  function parseUnifiedRows(rows, targetDate) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    let headerRowIdx = -1;
+    let colIndices = null;
+    let maxMatchCount = 0;
+
+    // Scan first 10 rows to detect header
+    for (let r = 0; r < Math.min(10, rows.length); r++) {
+      const candidateRow = rows[r];
+      if (!Array.isArray(candidateRow) || candidateRow.length === 0) continue;
+      const candidateIndices = resolveColumnIndices(candidateRow);
+
+      let matchCount = 0;
+      if (candidateIndices.idxOrder !== -1) matchCount++;
+      if (candidateIndices.idxTrack !== -1) matchCount++;
+      if (candidateIndices.idxSku !== -1) matchCount++;
+      if (candidateIndices.idxQty !== -1) matchCount++;
+      if (candidateIndices.idxCarrier !== -1) matchCount++;
+      if (candidateIndices.idxDate !== -1) matchCount++;
+
+      if (matchCount >= 2 && matchCount > maxMatchCount) {
+        maxMatchCount = matchCount;
+        headerRowIdx = r;
+        colIndices = candidateIndices;
+      }
+    }
+
+    let dataStartRow = 0;
+    if (headerRowIdx !== -1 && colIndices) {
+      dataStartRow = headerRowIdx + 1;
+    } else {
+      dataStartRow = 0;
+      const firstRow = rows.find((r) => Array.isArray(r) && r.some((c) => String(c).trim() !== ''));
+      colIndices = inferColumnIndicesFromData(firstRow || rows[0]);
+    }
 
     const result = [];
-    const targetDate = state.activeDate;
+    const now = Date.now();
 
-    // Check header row (row 0)
-    const header = rows[0].map((h) => String(h || '').trim().toLowerCase());
-    let idxDate = header.findIndex((h) => h.includes('วัน'));
-    let idxOrder = header.findIndex((h) => h.includes('order'));
-    let idxTrack = header.findIndex((h) => h.includes('track'));
-    let idxSku = header.findIndex((h) => h.includes('sku') || h.includes('สินค้า'));
-    let idxQty = header.findIndex((h) => h.includes('จำนวน'));
-    let idxCarrier = header.findIndex((h) => h.includes('ขนส่ง'));
-    let idxPacker = header.findIndex((h) => h.includes('ผู้จัด') || h.includes('แพ็ค'));
-
-    // Default indices if not named
-    if (idxDate === -1) idxDate = 0;
-    if (idxOrder === -1) idxOrder = 1;
-    if (idxTrack === -1) idxTrack = 2;
-    if (idxSku === -1) idxSku = 3;
-    if (idxQty === -1) idxQty = 4;
-    if (idxCarrier === -1) idxCarrier = 5;
-    if (idxPacker === -1) idxPacker = 6;
-
-    for (let r = 1; r < rows.length; r++) {
+    for (let r = dataStartRow; r < rows.length; r++) {
       const row = rows[r];
-      if (!row || row.length === 0) continue;
+      if (!Array.isArray(row) || row.length === 0) continue;
 
-      const rawTrack = row[idxTrack] ? String(row[idxTrack]).trim() : '';
-      const rawOrder = row[idxOrder] ? String(row[idxOrder]).trim() : '';
-      if (!rawTrack && !rawOrder) continue;
+      let rawOrder = colIndices.idxOrder !== -1 && row[colIndices.idxOrder] !== undefined ? String(row[colIndices.idxOrder]).trim() : '';
+      let rawTrack = colIndices.idxTrack !== -1 && row[colIndices.idxTrack] !== undefined ? String(row[colIndices.idxTrack]).trim() : '';
+      let rawDate = colIndices.idxDate !== -1 && row[colIndices.idxDate] !== undefined ? String(row[colIndices.idxDate]).trim() : '';
+      let rawSku = colIndices.idxSku !== -1 && row[colIndices.idxSku] !== undefined ? String(row[colIndices.idxSku]).trim() : '';
+      let rawVariation = colIndices.idxVariation !== -1 && row[colIndices.idxVariation] !== undefined ? String(row[colIndices.idxVariation]).trim() : '';
+      let rawCarrier = colIndices.idxCarrier !== -1 && row[colIndices.idxCarrier] !== undefined ? String(row[colIndices.idxCarrier]).trim() : '';
+      let rawPacker = colIndices.idxPacker !== -1 && row[colIndices.idxPacker] !== undefined ? String(row[colIndices.idxPacker]).trim() : '';
+      let rawNotes = colIndices.idxNotes !== -1 && row[colIndices.idxNotes] !== undefined ? String(row[colIndices.idxNotes]).trim() : '';
 
-      const dateVal = parseDateCell(row[idxDate]) || targetDate;
+      // Skip completely empty rows
+      if (!rawOrder && !rawTrack && !rawSku) continue;
+
+      // Failsafe 1: If rawOrder is a Tracking ID and rawTrack is not, swap them!
+      const isTrackLike = (val) => /^(THT|TH\d|SPXTH|KEX|KER|JNT)/i.test(val) || (/^\d{13,15}$/.test(val) && val.startsWith('66'));
+      const isOrderLike = (val) => /^[0-9A-Za-z]{12,25}$/.test(val) && !isTrackLike(val);
+
+      if (isTrackLike(rawOrder) && (!rawTrack || isOrderLike(rawTrack) || parseDateCell(rawTrack))) {
+        const temp = rawOrder;
+        rawOrder = isOrderLike(rawTrack) ? rawTrack : '';
+        rawTrack = temp;
+      }
+
+      // Failsafe 2: If rawTrack is a Date string, clear it (NEVER allow date as tracking)
+      if (rawTrack && parseDateCell(rawTrack) && !/^\d{14}$/.test(rawTrack) && !isTrackLike(rawTrack)) {
+        if (!rawDate) rawDate = rawTrack;
+        rawTrack = '';
+      }
+
+      // Parse Ship Date
+      let shipDate = '';
+      if (rawDate) {
+        shipDate = parseDateCell(rawDate);
+      }
+      if (!shipDate) {
+        shipDate = targetDate;
+      }
+
+      // Combine SKU and Variation
+      let finalSku = rawSku;
+      if (rawVariation && !finalSku.includes(rawVariation)) {
+        finalSku = finalSku ? `${finalSku} [${rawVariation}]` : rawVariation;
+      }
+      if (!finalSku) {
+        finalSku = 'โซฟา/เก้าอี้สตูล';
+      }
+
+      // Parse Quantity
+      let qty = 1;
+      if (colIndices.idxQty !== -1 && row[colIndices.idxQty] !== undefined && row[colIndices.idxQty] !== null && row[colIndices.idxQty] !== '') {
+        const num = parseInt(String(row[colIndices.idxQty]).replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(num) && num > 0) {
+          qty = num;
+        }
+      }
+
+      // Auto-detect Carrier
+      const carrier = detectCarrier(rawTrack, rawCarrier);
+
+      // Clean Tracking
       const cleanTrk = normalizeTracking(rawTrack);
 
       result.push({
-        id: 'ORD-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7) + '-' + r,
-        shipDate: dateVal,
+        id: 'ORD-' + now + '-' + Math.random().toString(36).substring(2, 7) + '-' + r,
+        shipDate: shipDate,
         orderId: rawOrder,
         trackingId: rawTrack,
         cleanTracking: cleanTrk,
-        sku: row[idxSku] ? String(row[idxSku]).trim() : '',
-        qty: parseInt(row[idxQty], 10) || 1,
-        carrier: row[idxCarrier] ? String(row[idxCarrier]).trim() : '',
-        packer: row[idxPacker] ? String(row[idxPacker]).trim() : '',
-        notes: ''
+        sku: finalSku,
+        qty: qty,
+        carrier: carrier,
+        packer: rawPacker || 'ทีมแพ็ค',
+        notes: rawNotes || ''
       });
     }
 
     return result;
   }
 
-  function parseDateCell(cellVal) {
-    if (!cellVal) return '';
-    if (typeof cellVal === 'number') {
-      // Excel serial date number
-      const d = XLSX.SSF.parse_date_code(cellVal);
-      if (d) {
-        return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-      }
-    }
-    const str = String(cellVal).trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
-      return str;
-    }
-    // Check DD/MM/YYYY
-    const dm = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-    if (dm) {
-      let y = parseInt(dm[3], 10);
-      if (y > 2500) y -= 543; // Buddhist era conversion
-      return `${y}-${String(dm[2]).padStart(2, '0')}-${String(dm[1]).padStart(2, '0')}`;
-    }
-    return '';
+  function parseExcelRows(rows) {
+    return parseUnifiedRows(rows, state.activeDate);
+  }
+
+  function parsePastedOrders(text) {
+    const rows = textTo2DArray(text);
+    return parseUnifiedRows(rows, state.activeDate);
   }
 
   function deleteOrder(id) {
