@@ -58,7 +58,7 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.5 Bulletproof-Import</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.6 Smart-Counter</span>
           </div>
           <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ป้องกันของตกหล่น และตรวจจับบาร์โค้ดสแกนซ้ำแบบเรียลไทม์</p>
         </div>
@@ -168,8 +168,11 @@
             <span class="text-xs font-medium">1. พัสดุต้องส่ง (ไม่ซ้ำ)</span>
             <i data-lucide="package" class="w-4 h-4 text-blue-500"></i>
           </div>
-          <div id="kpi-unique-orders" class="text-2xl sm:text-3xl font-bold font-mono text-slate-900">0</div>
-          <div class="text-[11px] text-slate-400 mt-1">เป้าหมายส่งวันนี้ (กล่อง)</div>
+          <div class="flex items-baseline gap-2">
+            <div id="kpi-unique-orders" class="text-2xl sm:text-3xl font-bold font-mono text-slate-900">0</div>
+            <span class="text-xs text-slate-500 font-medium">กล่อง</span>
+          </div>
+          <div id="kpi-unique-orders-sub" class="text-[11px] text-slate-500 mt-1 font-medium">เป้าหมายส่งวันนี้ (รวม 0 ชิ้น)</div>
         </div>
 
         <!-- 2. พบสแกนตรงวันแล้ว (พัสดุ) -->
@@ -302,18 +305,18 @@
 
         <!-- Filter Pills -->
         <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-          <button class="filter-pill active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition flex items-center gap-1.5" data-filter="all">
-            ทั้งหมด (<span id="badge-count-all">0</span>)
+          <button class="filter-pill active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition flex items-center gap-1.5 shrink-0" data-filter="all">
+            ทั้งหมด (<span id="badge-count-all">0</span> กล่อง / <span id="badge-count-qty">0</span> ชิ้น)
           </button>
-          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5" data-filter="missing">
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5 shrink-0" data-filter="missing">
             <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-            ยังไม่สแกน (<span id="badge-count-missing">0</span>)
+            ยังไม่สแกน (<span id="badge-count-missing">0</span> กล่อง)
           </button>
-          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5" data-filter="scanned">
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5 shrink-0" data-filter="scanned">
             <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-            สแกนแล้ว (<span id="badge-count-scanned">0</span>)
+            สแกนแล้ว (<span id="badge-count-scanned">0</span> กล่อง)
           </button>
-          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition" data-filter="issues">
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition shrink-0" data-filter="issues">
             มีปัญหา
           </button>
         </div>
@@ -556,9 +559,9 @@
   </div>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=2.5"></script>
-  <script src="camera-scanner.js?v=2.5"></script>
-  <script src="sync-service.js?v=2.5"></script>
-  <script src="app.js?v=2.5"></script>
+  <script src="audio-feedback.js?v=2.6"></script>
+  <script src="camera-scanner.js?v=2.6"></script>
+  <script src="sync-service.js?v=2.6"></script>
+  <script src="app.js?v=2.6"></script>
 </body>
 </html>

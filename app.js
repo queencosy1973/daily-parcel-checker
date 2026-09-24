@@ -290,10 +290,16 @@
       }
     });
 
+    // Total Items Quantity & Total Rows
+    const totalItemsQty = todayOrders.reduce((sum, o) => sum + (parseInt(o.qty, 10) || 1), 0);
+    const totalRowsCount = todayOrders.length;
+
     // Completion Rate %
     const completionRate = uniqueOrdersCount > 0 ? ((scannedOrdersCount / uniqueOrdersCount) * 100).toFixed(1) : 0;
 
     return {
+      totalItemsQty,
+      totalRowsCount,
       uniqueOrdersCount,
       scannedOrdersCount,
       notScannedOrdersCount,
@@ -652,6 +658,7 @@
 
     // 1. Unique Orders (พัสดุต้องส่ง)
     if ($('kpi-unique-orders')) $('kpi-unique-orders').innerText = kpis.uniqueOrdersCount.toLocaleString();
+    if ($('kpi-unique-orders-sub')) $('kpi-unique-orders-sub').innerText = `เป้าหมายส่งวันนี้ (รวม ${kpis.totalItemsQty} ชิ้น)`;
 
     // 2. Scanned Today (พบสแกนตรงวันแล้ว)
     if ($('kpi-scanned-orders')) $('kpi-scanned-orders').innerText = kpis.scannedOrdersCount.toLocaleString();
@@ -702,6 +709,7 @@
 
     // Update Quick Filter Badges
     if ($('badge-count-all')) $('badge-count-all').innerText = kpis.uniqueOrdersCount;
+    if ($('badge-count-qty')) $('badge-count-qty').innerText = kpis.totalItemsQty;
     if ($('badge-count-missing')) $('badge-count-missing').innerText = kpis.notScannedOrdersCount;
     if ($('badge-count-scanned')) $('badge-count-scanned').innerText = kpis.scannedOrdersCount;
     if ($('badge-count-extra')) $('badge-count-extra').innerText = kpis.extraScansCount;
