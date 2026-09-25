@@ -34,7 +34,7 @@
       <div>
         <div class="flex items-center gap-1.5">
           <h1 class="text-sm font-bold text-white tracking-tight leading-tight">จุดสแกนพัสดุหน้ารถ</h1>
-          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v3.0 Scan-Lock & Batch-Split</span>
+          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v3.1 Scan-Lock & Batch-Split</span>
         </div>
         <p class="text-[10px] text-emerald-400 font-mono" id="mobile-date-display">2026-09-23</p>
       </div>
@@ -128,9 +128,9 @@
   </main>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=3.0"></script>
-  <script src="camera-scanner.js?v=3.0"></script>
-  <script src="sync-service.js?v=3.0"></script>
+  <script src="audio-feedback.js?v=3.1"></script>
+  <script src="camera-scanner.js?v=3.1"></script>
+  <script src="sync-service.js?v=3.1"></script>
   <script>
     (function () {
       'use strict';
@@ -158,6 +158,30 @@
           .replace(/[^A-Z0-9]/g, '');
       }
 
+      function extractTrackings(raw) {
+        if (!raw) return [];
+        let tokens = String(raw)
+          .split(/[\s,;\t\r\n\u00A0\u200B-\u200D\uFEFF]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        if (tokens.length > 1) return tokens;
+
+        const singleStr = tokens[0] || String(raw).trim();
+        if (singleStr.length >= 24) {
+          const matched = singleStr.match(/(?:66\d{12}|TH[A-Z0-9]{10,14}|[A-Z0-9]{14,18})/gi);
+          if (matched && matched.length > 1) return matched;
+          if (/^\d+$/.test(singleStr) && singleStr.length % 14 === 0) {
+            const chunks = [];
+            for (let i = 0; i < singleStr.length; i += 14) {
+              chunks.push(singleStr.substring(i, i + 14));
+            }
+            return chunks;
+          }
+        }
+        return tokens;
+      }
+
       function escapeHtml(str) {
         if (!str && str !== 0) return '';
         return String(str)
@@ -174,11 +198,14 @@
         let hasRepaired = false;
         const repaired = [];
         scans.forEach((scan) => {
-          const raw = String(scan.trackingId || '');
-          const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
-          if (lines.length > 1) {
+          let tokens = extractTrackings(scan.trackingId);
+          if (tokens.length <= 1 && scan.cleanTracking && scan.cleanTracking.length >= 24) {
+            tokens = extractTrackings(scan.cleanTracking);
+          }
+
+          if (tokens.length > 1) {
             hasRepaired = true;
-            lines.forEach((lineTrk, i) => {
+            tokens.forEach((lineTrk, i) => {
               const clean = normalizeTracking(lineTrk);
               const singleScan = {
                 ...scan,
@@ -203,8 +230,11 @@
       SyncService.init({
         onRemoteScan: (remoteScan) => {
           if (remoteScan) {
-            const raw = String(remoteScan.trackingId || '');
-            const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+            let lines = extractTrackings(remoteScan.trackingId);
+            if (lines.length <= 1 && remoteScan.cleanTracking && remoteScan.cleanTracking.length >= 24) {
+              lines = extractTrackings(remoteScan.cleanTracking);
+            }
+
             if (lines.length > 1) {
               lines.forEach((lineTrk, i) => {
                 const subScan = {
@@ -301,10 +331,7 @@
       // Scan Handler (with SCAN-LOCK Hard Duplicate Blocking, Multi-Line Batch Splitting & Cross-Date Match)
       function handleMobileScan(rawBarcode) {
         AudioFeedback.init();
-        const rawLines = String(rawBarcode || '')
-          .split(/[\r\n,]+/)
-          .map((s) => s.trim())
-          .filter(Boolean);
+        const rawLines = extractTrackings(rawBarcode);
 
         if (rawLines.length > 1) {
           rawLines.forEach((line) => handleSingleMobileScan(line, false));

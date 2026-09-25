@@ -38,6 +38,32 @@
       .toUpperCase();
   }
 
+  function extractTrackings(raw) {
+    if (!raw) return [];
+    // 1. Try splitting by any whitespace (spaces, tabs, newlines), commas, or semicolons
+    let tokens = String(raw)
+      .split(/[\s,;\t\r\n\u00A0\u200B-\u200D\uFEFF]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (tokens.length > 1) return tokens;
+
+    // 2. Fallback: If single string but contains multiple concatenated barcodes (e.g. 24+ chars)
+    const singleStr = tokens[0] || String(raw).trim();
+    if (singleStr.length >= 24) {
+      const matched = singleStr.match(/(?:66\d{12}|TH[A-Z0-9]{10,14}|[A-Z0-9]{14,18})/gi);
+      if (matched && matched.length > 1) return matched;
+      if (/^\d+$/.test(singleStr) && singleStr.length % 14 === 0) {
+        const chunks = [];
+        for (let i = 0; i < singleStr.length; i += 14) {
+          chunks.push(singleStr.substring(i, i + 14));
+        }
+        return chunks;
+      }
+    }
+    return tokens;
+  }
+
   // DOM Elements Helper
   const $ = (id) => document.getElementById(id);
 
@@ -498,11 +524,14 @@
     const repaired = [];
 
     state.scans.forEach((scan) => {
-      const raw = String(scan.trackingId || '');
-      const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
-      if (lines.length > 1) {
+      let tokens = extractTrackings(scan.trackingId);
+      if (tokens.length <= 1 && scan.cleanTracking && scan.cleanTracking.length >= 24) {
+        tokens = extractTrackings(scan.cleanTracking);
+      }
+
+      if (tokens.length > 1) {
         hasRepaired = true;
-        lines.forEach((lineTrk, i) => {
+        tokens.forEach((lineTrk, i) => {
           const clean = normalizeTracking(lineTrk);
           const singleScan = {
             id: (scan.id || 'SCAN-' + Date.now()) + '-rep-' + i,
@@ -530,7 +559,7 @@
     if (hasRepaired) {
       state.scans = repaired;
       SyncService.saveLocalScans(state.scans);
-      console.log('repairBundledScans: Repaired and unbundled multi-line scans into individual records');
+      console.log('repairBundledScans: Repaired and unbundled ' + (repaired.length) + ' scans into individual records');
     }
     return hasRepaired;
   }
@@ -575,11 +604,8 @@
   async function processScannedBarcode(rawBarcode, source = 'ปืนสแกน') {
     AudioFeedback.init(); // Ensure Web Audio context is alive
 
-    // Check if input contains multiple lines (e.g. pasted text from Excel/Line or batch scanner dump)
-    const rawLines = String(rawBarcode || '')
-      .split(/[\r\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    // Check if input contains multiple barcodes (pasted text with spaces/newlines/commas or batch scanner dump)
+    const rawLines = extractTrackings(rawBarcode);
 
     if (rawLines.length > 1) {
       let successCount = 0;
@@ -810,7 +836,10 @@
   function handleRemoteScan(remoteScan) {
     if (!remoteScan) return;
     const raw = String(remoteScan.trackingId || '');
-    const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+    let lines = extractTrackings(raw);
+    if (lines.length <= 1 && remoteScan.cleanTracking && remoteScan.cleanTracking.length >= 24) {
+      lines = extractTrackings(remoteScan.cleanTracking);
+    }
 
     if (lines.length > 1) {
       lines.forEach((lineTrk, i) => {
@@ -1520,9 +1549,10 @@
     if (!btn) return;
 
     btn.addEventListener('click', () => {
+      const repaired = repairBundledScans();
       const reMatched = reconcileScansAndOrders();
       renderAll();
-      alert(`🔄 ตรวจสอบและประมวลผลการจับคู่ข้อมูลเรียบร้อย!\nพัสดุที่ตรงกับคำสั่งซื้อ: ${reMatched} รายการ`);
+      alert(`🔄 ตรวจสอบและประมวลผลการจับคู่ข้อมูลเรียบร้อย!\n- แยกรายการที่ซ้อนกัน: ${repaired ? 'สำเร็จ (แตกรายการเดี่ยวเรียบร้อย)' : 'ไม่มีรายการซ้อน'}\n- พัสดุที่ตรงกับคำสั่งซื้อ: ${reMatched} รายการ`);
     });
   }
 
