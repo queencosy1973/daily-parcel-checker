@@ -51,6 +51,9 @@
     state.orders = SyncService.getLocalOrders();
     state.scans = SyncService.getLocalScans();
 
+    // Auto-repair any bundled/multi-line scans from past paste/batch inputs
+    repairBundledScans();
+
     // Auto-heal orders that were erroneously assigned 2026-09-18 from TikTok RTS Time
     let ordersRepaired = 0;
     state.orders.forEach((o) => {
@@ -490,7 +493,50 @@
     };
   }
 
+  function repairBundledScans() {
+    let hasRepaired = false;
+    const repaired = [];
+
+    state.scans.forEach((scan) => {
+      const raw = String(scan.trackingId || '');
+      const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+      if (lines.length > 1) {
+        hasRepaired = true;
+        lines.forEach((lineTrk, i) => {
+          const clean = normalizeTracking(lineTrk);
+          const singleScan = {
+            id: (scan.id || 'SCAN-' + Date.now()) + '-rep-' + i,
+            scanDate: scan.scanDate || state.activeDate,
+            scanTime: scan.scanTime || '19:22:00',
+            trackingId: lineTrk,
+            cleanTracking: clean,
+            scanner: scan.scanner || 'สแกนเนอร์',
+            source: scan.source || 'ปืนสแกน',
+            isDuplicateScan: false
+          };
+          const resolution = resolveScanMatch(singleScan);
+          singleScan.matchResult = resolution.result;
+          singleScan.matchedOrderId = resolution.order ? resolution.order.orderId : '';
+          singleScan.matchedSku = resolution.order ? resolution.order.sku : '';
+          singleScan.matchedQty = resolution.order ? resolution.order.qty : '';
+          singleScan.matchedCarrier = resolution.order ? resolution.order.carrier : '';
+          repaired.push(singleScan);
+        });
+      } else {
+        repaired.push(scan);
+      }
+    });
+
+    if (hasRepaired) {
+      state.scans = repaired;
+      SyncService.saveLocalScans(state.scans);
+      console.log('repairBundledScans: Repaired and unbundled multi-line scans into individual records');
+    }
+    return hasRepaired;
+  }
+
   function reconcileScansAndOrders() {
+    repairBundledScans();
     let reMatchedCount = 0;
     let updatedCount = 0;
     state.scans.forEach((scan) => {
@@ -529,9 +575,37 @@
   async function processScannedBarcode(rawBarcode, source = 'ปืนสแกน') {
     AudioFeedback.init(); // Ensure Web Audio context is alive
 
+    // Check if input contains multiple lines (e.g. pasted text from Excel/Line or batch scanner dump)
+    const rawLines = String(rawBarcode || '')
+      .split(/[\r\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (rawLines.length > 1) {
+      let successCount = 0;
+      for (const line of rawLines) {
+        const added = await processSingleScannedBarcode(line, source, false);
+        if (added) successCount++;
+      }
+      renderAll();
+      const toast = $('desktop-remote-toast');
+      if (toast) {
+        toast.innerText = `📦 นำเข้าข้อมูลสแกนเป็นชุดสำเร็จ ${successCount} รายการ`;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 3500);
+      }
+      return;
+    }
+
+    if (rawLines.length === 1) {
+      await processSingleScannedBarcode(rawLines[0], source, true);
+    }
+  }
+
+  async function processSingleScannedBarcode(rawBarcode, source = 'ปืนสแกน', triggerFeedback = true) {
     const clean = normalizeTracking(rawBarcode);
     const raw = String(rawBarcode || '').trim();
-    if (!clean && !raw) return;
+    if (!clean && !raw) return false;
 
     const targetDate = state.activeDate;
     const scannerName = (source.includes('มือถือ') ? ($('input-mobile-scanner-name')?.value || state.scannerName) : ($('input-scanner-name')?.value || state.scannerName)).trim() || 'พนักงานคลัง';
@@ -553,25 +627,27 @@
     const isDuplicate = existingScansToday.length > 0;
 
     if (isDuplicate) {
-      // 🚫 HARD BLOCK DUPLICATE SCAN!
-      const prevScan = existingScansToday[0];
-      AudioFeedback.blocked();
-      CameraScanner.flashBox('blocked');
+      if (triggerFeedback) {
+        // 🚫 HARD BLOCK DUPLICATE SCAN!
+        const prevScan = existingScansToday[0];
+        AudioFeedback.blocked();
+        CameraScanner.flashBox('blocked');
 
-      // Visual feedback on HUD and Modal
-      showDuplicateBlockedFeedback(raw, prevScan, matchedOrder);
+        // Visual feedback on HUD and Modal
+        showDuplicateBlockedFeedback(raw, prevScan, matchedOrder);
 
-      // Reset and refocus gun input field immediately so next box can be scanned without mouse
-      const gunInput = $('input-barcode-gun');
-      if (gunInput) {
-        gunInput.value = '';
-        gunInput.classList.add('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
-        setTimeout(() => {
-          gunInput.classList.remove('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
-          gunInput.focus();
-        }, 1200);
+        // Reset and refocus gun input field immediately so next box can be scanned without mouse
+        const gunInput = $('input-barcode-gun');
+        if (gunInput) {
+          gunInput.value = '';
+          gunInput.classList.add('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
+          setTimeout(() => {
+            gunInput.classList.remove('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
+            gunInput.focus();
+          }, 1200);
+        }
       }
-      return; // DO NOT add to state.scans! Prevent duplicate parcels from being dispatched!
+      return false; // DO NOT add to state.scans! Prevent duplicate parcels from being dispatched!
     }
 
     const now = new Date();
@@ -597,12 +673,13 @@
     SyncService.addLocalScan(newScanRecord);
     state.scans.unshift(newScanRecord);
 
-    // Trigger Audio & Visual HUD Feedback
-    const matchedCount = effectiveClean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === effectiveClean).length : 0;
-    showScanFeedback(newScanRecord, false, matchedCount);
-
-    // Re-render UI
-    renderAll();
+    if (triggerFeedback) {
+      // Trigger Audio & Visual HUD Feedback
+      const matchedCount = effectiveClean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === effectiveClean).length : 0;
+      showScanFeedback(newScanRecord, false, matchedCount);
+      renderAll();
+    }
+    return true;
   }
 
   function showDuplicateBlockedFeedback(trackingId, prevScan, matchedOrder) {
@@ -731,6 +808,48 @@
   }
 
   function handleRemoteScan(remoteScan) {
+    if (!remoteScan) return;
+    const raw = String(remoteScan.trackingId || '');
+    const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+
+    if (lines.length > 1) {
+      lines.forEach((lineTrk, i) => {
+        const subScan = {
+          ...remoteScan,
+          id: remoteScan.id + '-rem-' + i,
+          trackingId: lineTrk,
+          cleanTracking: normalizeTracking(lineTrk)
+        };
+        const resolution = resolveScanMatch(subScan);
+        if (resolution.order) {
+          subScan.matchedOrderId = resolution.order.orderId;
+          subScan.matchedSku = resolution.order.sku;
+          subScan.matchedQty = resolution.order.qty;
+          subScan.matchedCarrier = resolution.order.carrier;
+          subScan.matchResult = resolution.result;
+        } else {
+          subScan.matchResult = resolution.result;
+        }
+
+        const existsIdx = state.scans.findIndex((s) => s.id === subScan.id);
+        if (existsIdx !== -1) {
+          state.scans[existsIdx] = subScan;
+        } else {
+          state.scans.unshift(subScan);
+        }
+      });
+      SyncService.saveLocalScans(state.scans);
+      renderAll();
+
+      const toast = $('desktop-remote-toast');
+      if (toast) {
+        toast.innerText = `📱 มือถือ (${remoteScan.scanner}) ส่งข้อมูลเป็นชุด ${lines.length} รายการ`;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 3500);
+      }
+      return;
+    }
+
     // Re-resolve match dynamically using desktop's state.orders
     const resolution = resolveScanMatch(remoteScan);
     if (resolution.order) {
@@ -776,6 +895,17 @@
             input.value = '';
           }
         }
+      });
+
+      // Handle paste event for pasting multiple barcodes at once
+      input.addEventListener('paste', () => {
+        setTimeout(() => {
+          const val = input.value.trim();
+          if (val && (val.includes('\n') || val.includes('\r') || val.includes(','))) {
+            processScannedBarcode(val, 'วางข้อมูลเป็นชุด');
+            input.value = '';
+          }
+        }, 60);
       });
     }
 

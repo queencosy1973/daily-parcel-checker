@@ -34,7 +34,7 @@
       <div>
         <div class="flex items-center gap-1.5">
           <h1 class="text-sm font-bold text-white tracking-tight leading-tight">จุดสแกนพัสดุหน้ารถ</h1>
-          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v2.9 Scan-Lock</span>
+          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v3.0 Scan-Lock & Batch-Split</span>
         </div>
         <p class="text-[10px] text-emerald-400 font-mono" id="mobile-date-display">2026-09-23</p>
       </div>
@@ -128,9 +128,9 @@
   </main>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=2.9"></script>
-  <script src="camera-scanner.js?v=2.9"></script>
-  <script src="sync-service.js?v=2.9"></script>
+  <script src="audio-feedback.js?v=3.0"></script>
+  <script src="camera-scanner.js?v=3.0"></script>
+  <script src="sync-service.js?v=3.0"></script>
   <script>
     (function () {
       'use strict';
@@ -170,11 +170,56 @@
 
       if ($('mobile-date-display')) $('mobile-date-display').innerText = today;
 
+      function repairBundledMobileScans() {
+        let hasRepaired = false;
+        const repaired = [];
+        scans.forEach((scan) => {
+          const raw = String(scan.trackingId || '');
+          const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+          if (lines.length > 1) {
+            hasRepaired = true;
+            lines.forEach((lineTrk, i) => {
+              const clean = normalizeTracking(lineTrk);
+              const singleScan = {
+                ...scan,
+                id: (scan.id || 'SCAN-MOB-' + Date.now()) + '-rep-' + i,
+                trackingId: lineTrk,
+                cleanTracking: clean
+              };
+              repaired.push(singleScan);
+            });
+          } else {
+            repaired.push(scan);
+          }
+        });
+        if (hasRepaired) {
+          scans = repaired;
+          SyncService.saveLocalScans(scans);
+        }
+        return hasRepaired;
+      }
+
       // Initialize Sync
       SyncService.init({
         onRemoteScan: (remoteScan) => {
-          if (remoteScan && !scans.some(s => s.id === remoteScan.id)) {
-            scans.unshift(remoteScan);
+          if (remoteScan) {
+            const raw = String(remoteScan.trackingId || '');
+            const lines = raw.split(/[\r\n,]+/).map((s) => s.trim()).filter(Boolean);
+            if (lines.length > 1) {
+              lines.forEach((lineTrk, i) => {
+                const subScan = {
+                  ...remoteScan,
+                  id: remoteScan.id + '-sub-' + i,
+                  trackingId: lineTrk,
+                  cleanTracking: normalizeTracking(lineTrk)
+                };
+                if (!scans.some((s) => s.id === subScan.id)) {
+                  scans.unshift(subScan);
+                }
+              });
+            } else if (!scans.some((s) => s.id === remoteScan.id)) {
+              scans.unshift(remoteScan);
+            }
             updateScannedCount();
             renderMobileScans();
           }
@@ -186,6 +231,7 @@
       });
       orders = SyncService.getLocalOrders();
       scans = SyncService.getLocalScans();
+      repairBundledMobileScans();
 
       updateScannedCount();
       renderMobileScans();
@@ -241,11 +287,38 @@
             }
           }
         });
+        inputManual.addEventListener('paste', () => {
+          setTimeout(() => {
+            const val = inputManual.value.trim();
+            if (val && (val.includes('\n') || val.includes('\r') || val.includes(','))) {
+              handleMobileScan(val);
+              inputManual.value = '';
+            }
+          }, 60);
+        });
       }
 
-      // Scan Handler (with SCAN-LOCK Hard Duplicate Blocking & Cross-Date Match)
+      // Scan Handler (with SCAN-LOCK Hard Duplicate Blocking, Multi-Line Batch Splitting & Cross-Date Match)
       function handleMobileScan(rawBarcode) {
         AudioFeedback.init();
+        const rawLines = String(rawBarcode || '')
+          .split(/[\r\n,]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        if (rawLines.length > 1) {
+          rawLines.forEach((line) => handleSingleMobileScan(line, false));
+          updateScannedCount();
+          renderMobileScans();
+          return;
+        }
+
+        if (rawLines.length === 1) {
+          handleSingleMobileScan(rawLines[0], true);
+        }
+      }
+
+      function handleSingleMobileScan(rawBarcode, triggerFeedback = true) {
         const clean = normalizeTracking(rawBarcode);
         const raw = String(rawBarcode || '').trim();
         if (!clean && !raw) return;
@@ -253,22 +326,24 @@
         const scannerName = ($('input-mobile-scanner-name')?.value || 'มือถือหน้ารถ').trim();
 
         // 1. HARD BLOCK DUPLICATE SCANS
-        const existingScan = clean ? scans.find(s => s.scanDate === today && s.cleanTracking === clean && !s.isBlocked) : null;
+        const existingScan = clean ? scans.find((s) => s.scanDate === today && s.cleanTracking === clean && !s.isBlocked) : null;
         if (existingScan) {
-          // 🚫 DUPLICATE DETECTED - HARD REJECT!
-          AudioFeedback.blocked();
-          CameraScanner.flashBox('blocked');
-          if (navigator.vibrate) {
-            navigator.vibrate([250, 100, 250, 100, 400]);
+          if (triggerFeedback) {
+            // 🚫 DUPLICATE DETECTED - HARD REJECT!
+            AudioFeedback.blocked();
+            CameraScanner.flashBox('blocked');
+            if (navigator.vibrate) {
+              navigator.vibrate([250, 100, 250, 100, 400]);
+            }
+            showMobileBlockedAlert(raw, existingScan);
           }
-          showMobileBlockedAlert(raw, existingScan);
           return; // DO NOT add to scans! DO NOT broadcast!
         }
 
         // 2. Query orders by tracking (Check today first, then fallback across all dates)
-        let matchedOrders = clean ? orders.filter(o => o.shipDate === today && o.cleanTracking === clean) : [];
+        let matchedOrders = clean ? orders.filter((o) => o.shipDate === today && o.cleanTracking === clean) : [];
         if (matchedOrders.length === 0 && clean) {
-          matchedOrders = orders.filter(o => o.cleanTracking === clean);
+          matchedOrders = orders.filter((o) => o.cleanTracking === clean);
         }
 
         let matchedOrder = null;
@@ -286,9 +361,9 @@
         } else {
           // 3. Query orders by Order ID (Check today first, then fallback across all dates)
           const rawTrim = rawBarcode.trim();
-          let matchedByOrderId = orders.filter(o => o.shipDate === today && (o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean)));
+          let matchedByOrderId = orders.filter((o) => o.shipDate === today && (o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean)));
           if (matchedByOrderId.length === 0) {
-            matchedByOrderId = orders.filter(o => o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean));
+            matchedByOrderId = orders.filter((o) => o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean));
           }
 
           if (matchedByOrderId.length >= 1) {
@@ -327,10 +402,12 @@
         scans.unshift(newScan);
         SyncService.addLocalScan(newScan);
 
-        // Feedback
-        showFeedback(newScan, false, matchedOrders.length);
-        updateScannedCount();
-        renderMobileScans();
+        if (triggerFeedback) {
+          // Feedback
+          showFeedback(newScan, false, matchedOrders.length);
+          updateScannedCount();
+          renderMobileScans();
+        }
       }
 
       function showMobileBlockedAlert(tracking, existingScan) {
