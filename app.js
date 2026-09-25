@@ -1174,8 +1174,10 @@
     );
 
     // Ship Date (Prioritize 'วันที่คาดว่าจะทำการจัดส่งสินค้า' or 'วันที่ต้องส่ง')
+    // Exclude 'created', 'paid', 'rts', 'time' to prevent pre-order timestamps from placing orders in past dates
     const idxDate = findExactOrInc(
-      ['วันที่คาดว่าจะทำการจัดส่งสินค้า', 'วันที่ต้องส่ง', 'วันที่จัดส่ง', 'ship date', 'shipping date', 'estimated delivery date', 'rts time', 'created time', 'วันที่นัดรับ', 'วันส่งของ', 'วันที่', 'date']
+      ['วันที่คาดว่าจะทำการจัดส่งสินค้า', 'วันที่ต้องส่ง', 'วันที่จัดส่ง', 'ship date', 'shipping date', 'estimated delivery date', 'วันที่นัดรับ', 'วันส่งของ', 'วันที่', 'date'],
+      ['created', 'สร้าง', 'paid', 'ชำระ', 'rts', 'ready to ship', 'time', 'เวลา']
     );
 
     // SKU: Tier 1 (Merchant Seller SKU)
@@ -1404,6 +1406,22 @@
 
       // Skip completely empty rows
       if (!rawOrder && !rawTrack && !rawSku) continue;
+
+      // Skip description / instructional rows (e.g. TikTok template Row 1 descriptions)
+      const lowerOrder = rawOrder.toLowerCase();
+      const lowerTrack = rawTrack.toLowerCase();
+      const lowerSku = rawSku.toLowerCase();
+      if (
+        lowerOrder.includes('unique order id') ||
+        lowerOrder.includes('platform unique') ||
+        lowerOrder.includes('order id.') ||
+        lowerTrack.includes("the order's tracking") ||
+        lowerTrack.includes('tracking number.') ||
+        lowerSku.includes('seller sku input') ||
+        (lowerSku.includes('sku id') && lowerOrder.includes('order'))
+      ) {
+        continue;
+      }
 
       // Failsafe 1: If rawOrder is a Tracking ID and rawTrack is not, swap them!
       const isTrackLike = (val) => Boolean(val && (/^(THT|TH\d|SPXTH|KEX|KER|JNT)/i.test(val) || (/^\d{13,15}$/.test(val) && val.startsWith('66'))));
