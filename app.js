@@ -98,6 +98,7 @@
     setupQrConnectModal();
     setupFilters();
     setupReMatchButton();
+    setupOrderActionModal();
 
     // 4. Check if Mobile View requested via URL hash
     if (window.location.hash === '#scanner' || window.innerWidth < 768) {
@@ -219,9 +220,14 @@
     const targetDate = state.activeDate;
 
     // Filter Outgoing Orders for Target Date
-    const todayOrders = state.orders.filter((o) => o.shipDate === targetDate);
+    const allTodayOrders = state.orders.filter((o) => o.shipDate === targetDate);
+    const cancelledOrders = allTodayOrders.filter((o) => o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+    
+    // Active orders to be shipped (excluding cancelled orders)
+    const todayOrders = allTodayOrders.filter((o) => !o.isCancelled && !(o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+    const untrackedOrders = todayOrders.filter((o) => !o.cleanTracking);
 
-    // Map of clean tracking -> count in today's orders
+    // Map of clean tracking -> count in today's active orders
     const orderTrackingCounts = {};
     todayOrders.forEach((o) => {
       const trk = o.cleanTracking;
@@ -290,7 +296,7 @@
       }
     });
 
-    // Total Items Quantity & Total Rows
+    // Total Items Quantity & Total Rows (from active orders)
     const totalItemsQty = todayOrders.reduce((sum, o) => sum + (parseInt(o.qty, 10) || 1), 0);
     const totalRowsCount = todayOrders.length;
 
@@ -309,13 +315,21 @@
       duplicateScansCount,
       duplicateOrdersCount,
       invalidDataCount,
+      untrackedOrdersCount: untrackedOrders.length,
+      cancelledOrdersCount: cancelledOrders.length,
       completionRate
     };
   }
 
   // Get verification status for an order row (Matching Google Sheet Col L formula)
   function getOrderStatus(order) {
-    if (!order.shipDate || !order.orderId || !order.cleanTracking || !order.sku || order.qty === undefined || order.qty === null || order.qty === '') {
+    if (order.isCancelled || (order.orderStatus && (order.orderStatus.includes('ยกเลิก') || order.orderStatus.toLowerCase().includes('cancel')))) {
+      return 'ลูกค้ายกเลิกคำสั่งซื้อ';
+    }
+    if (!order.cleanTracking) {
+      return 'ไม่มีเลข Tracking (เช็คยกเลิก)';
+    }
+    if (!order.shipDate || !order.orderId || !order.sku || order.qty === undefined || order.qty === null || order.qty === '') {
       return 'ข้อมูลไม่ครบ/รูปแบบผิด';
     }
     const numQty = Number(order.qty);
@@ -324,7 +338,7 @@
     }
 
     // Check duplicate in same date's orders (Only flag if different Order IDs share the same tracking)
-    const sameDateOrders = state.orders.filter((o) => o.shipDate === order.shipDate && o.cleanTracking === order.cleanTracking);
+    const sameDateOrders = state.orders.filter((o) => o.shipDate === order.shipDate && o.cleanTracking === order.cleanTracking && !o.isCancelled);
     if (sameDateOrders.length > 1) {
       const diffOrderIds = sameDateOrders.filter((o) => o.orderId !== order.orderId);
       if (diffOrderIds.length > 0) {
@@ -350,16 +364,26 @@
   function resolveScanMatch(scan) {
     const targetDate = scan.scanDate;
     const clean = scan.cleanTracking;
-    if (!clean) return { result: 'ข้อมูลไม่ครบ/รูปแบบผิด', order: null, statusType: 'invalid' };
+    const raw = String(scan.trackingId || '').trim();
+    if (!clean && !raw) return { result: 'ข้อมูลไม่ครบ/รูปแบบผิด', order: null, statusType: 'invalid' };
 
-    const matchedOrders = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean);
+    // 1. Try matching by tracking number
+    const matchedOrders = clean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean) : [];
 
     if (matchedOrders.length >= 1) {
       const uniqueOrderIds = new Set(matchedOrders.map((o) => o.orderId));
       if (uniqueOrderIds.size === 1) {
+        const order = matchedOrders[0];
+        if (order.isCancelled || (order.orderStatus && (order.orderStatus.includes('ยกเลิก') || order.orderStatus.toLowerCase().includes('cancel')))) {
+          return {
+            result: 'ลูกค้ายกเลิกคำสั่งซื้อ',
+            order: order,
+            statusType: 'cancelled'
+          };
+        }
         return {
           result: 'พบในรายการส่ง',
-          order: matchedOrders[0],
+          order: order,
           statusType: 'matched'
         };
       } else {
@@ -369,15 +393,46 @@
           statusType: 'dup_order'
         };
       }
-    } else {
-      // Unconditionally return รอนำเข้าออเดอร์ so warehouse staff can scan labels
-      // ahead of time, and the system retroactively matches when orders are imported later.
+    }
+
+    // 2. Try matching by Order ID (in case warehouse scans Order ID barcode or pick slip)
+    const matchedByOrderId = state.orders.filter((o) => 
+      o.shipDate === targetDate && (
+        o.orderId === raw || 
+        (clean && normalizeTracking(o.orderId) === clean) ||
+        (raw.length >= 12 && o.orderId.includes(raw))
+      )
+    );
+
+    if (matchedByOrderId.length >= 1) {
+      const order = matchedByOrderId[0];
+      if (order.isCancelled || (order.orderStatus && (order.orderStatus.includes('ยกเลิก') || order.orderStatus.toLowerCase().includes('cancel')))) {
+        return {
+          result: 'ลูกค้ายกเลิกคำสั่งซื้อ',
+          order: order,
+          statusType: 'cancelled'
+        };
+      }
+      if (!order.cleanTracking) {
+        return {
+          result: 'ไม่มีเลขพัสดุ (เช็คยกเลิก)',
+          order: order,
+          statusType: 'untracked'
+        };
+      }
       return {
-        result: 'รอนำเข้าออเดอร์',
-        order: null,
-        statusType: 'pending_orders'
+        result: 'พบในรายการส่ง',
+        order: order,
+        statusType: 'matched'
       };
     }
+
+    // 3. Fallback: pending orders
+    return {
+      result: 'รอนำเข้าออเดอร์',
+      order: null,
+      statusType: 'pending_orders'
+    };
   }
 
   function reconcileScansAndOrders() {
@@ -420,7 +475,8 @@
     AudioFeedback.init(); // Ensure Web Audio context is alive
 
     const clean = normalizeTracking(rawBarcode);
-    if (!clean) return;
+    const raw = String(rawBarcode || '').trim();
+    if (!clean && !raw) return;
 
     const targetDate = state.activeDate;
     const scannerName = (source.includes('มือถือ') ? ($('input-mobile-scanner-name')?.value || state.scannerName) : ($('input-scanner-name')?.value || state.scannerName)).trim() || 'พนักงานคลัง';
@@ -428,15 +484,18 @@
     state.scannerName = scannerName;
     SyncService.saveConfig({ ...SyncService.getConfig(), scannerName });
 
-    // Check if this tracking was already scanned today
-    const existingScansToday = state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === clean);
-    const isDuplicate = existingScansToday.length > 0;
-
-    // Dynamically resolve match against today's orders
-    const dummyScan = { scanDate: targetDate, cleanTracking: clean };
+    // Dynamically resolve match against today's orders (checks Tracking ID, then Order ID)
+    const dummyScan = { scanDate: targetDate, cleanTracking: clean, trackingId: raw };
     const resolution = resolveScanMatch(dummyScan);
     const matchedOrder = resolution.order;
     const matchResult = resolution.result;
+
+    // Use clean tracking from scan OR from matched order if scanned by Order ID
+    const effectiveClean = clean || (matchedOrder ? matchedOrder.cleanTracking : '');
+
+    // Check if this tracking was already scanned today
+    const existingScansToday = effectiveClean ? state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === effectiveClean) : [];
+    const isDuplicate = existingScansToday.length > 0;
 
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0];
@@ -445,8 +504,8 @@
       id: 'SCAN-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       scanDate: targetDate,
       scanTime: timeStr,
-      trackingId: rawBarcode.trim(),
-      cleanTracking: clean,
+      trackingId: raw,
+      cleanTracking: effectiveClean,
       scanner: scannerName,
       source: source,
       matchResult: matchResult,
@@ -462,7 +521,7 @@
     state.scans.unshift(newScanRecord);
 
     // Trigger Audio & Visual HUD Feedback
-    const matchedCount = state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean).length;
+    const matchedCount = effectiveClean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === effectiveClean).length : 0;
     showScanFeedback(newScanRecord, isDuplicate, matchedCount);
 
     // Re-render UI
@@ -478,7 +537,23 @@
     let title = '';
     let subtitle = '';
 
-    if (scanRecord.matchResult === 'พบในรายการส่ง') {
+    if (scanRecord.matchResult === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
+      // CANCELLED ORDER ALERT! 🚫
+      AudioFeedback.error();
+      CameraScanner.flashBox('error');
+      bgClass = 'bg-rose-100 border-rose-600 text-rose-950 animate-pulse';
+      iconName = 'x-octagon';
+      title = `🚫 หยุดส่ง! ลูกค้ายกเลิกคำสั่งซื้อ: ${scanRecord.matchedOrderId || scanRecord.trackingId}`;
+      subtitle = `สินค้า: ${scanRecord.matchedSku || '-'} (${scanRecord.matchedQty || 1} ชิ้น) | คำสั่งซื้อถูกยกเลิกบนแพลตฟอร์ม ห้ามนำสินค้าขึ้นรถเด็ดขาด!`;
+    } else if (scanRecord.matchResult === 'ไม่มีเลขพัสดุ (เช็คยกเลิก)') {
+      // UNTRACKED / SUSPECTED CANCELLED ALERT! ⚠️
+      AudioFeedback.error();
+      CameraScanner.flashBox('error');
+      bgClass = 'bg-amber-100 border-amber-600 text-amber-950 animate-pulse';
+      iconName = 'alert-triangle';
+      title = `⚠️ ระวัง! ออเดอร์นี้ไม่มีเลข Tracking (เช็คยกเลิก): ${scanRecord.matchedOrderId || scanRecord.trackingId}`;
+      subtitle = `สินค้า: ${scanRecord.matchedSku || '-'} (${scanRecord.matchedQty || 1} ชิ้น) | ยังไม่มีเลขพัสดุในระบบ (อาจถูกลูกค้ายกเลิกแล้ว) กรุณาเช็คแพลตฟอร์มก่อนส่ง!`;
+    } else if (scanRecord.matchResult === 'พบในรายการส่ง') {
       if (!isDuplicate) {
         // SUCCESS ✅
         AudioFeedback.success();
@@ -713,6 +788,109 @@
     if ($('badge-count-missing')) $('badge-count-missing').innerText = kpis.notScannedOrdersCount;
     if ($('badge-count-scanned')) $('badge-count-scanned').innerText = kpis.scannedOrdersCount;
     if ($('badge-count-extra')) $('badge-count-extra').innerText = kpis.extraScansCount;
+    if ($('badge-count-untracked')) $('badge-count-untracked').innerText = (kpis.untrackedOrdersCount + kpis.cancelledOrdersCount);
+
+    renderUntrackedAlerts(kpis);
+  }
+
+  function renderUntrackedAlerts(kpis) {
+    const dashAlert = $('dashboard-untracked-alert');
+    const ordersAlert = $('orders-untracked-alert');
+
+    const targetDate = state.activeDate;
+    const allToday = state.orders.filter((o) => o.shipDate === targetDate);
+    const problemOrders = allToday.filter((o) => !o.cleanTracking || o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+
+    if (problemOrders.length === 0) {
+      if (dashAlert) {
+        dashAlert.classList.add('hidden');
+        dashAlert.innerHTML = '';
+      }
+      if (ordersAlert) {
+        ordersAlert.classList.add('hidden');
+        ordersAlert.innerHTML = '';
+      }
+      return;
+    }
+
+    const itemsHtml = problemOrders.map((o) => {
+      const isCanc = o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel')));
+      const statusText = isCanc ? 'ลูกค้ายกเลิก' : 'ยังไม่มีเลข Tracking';
+      const badgeClass = isCanc ? 'bg-rose-100 text-rose-800 border-rose-300' : 'bg-amber-100 text-amber-900 border-amber-300';
+      return `
+        <div class="flex flex-wrap items-center justify-between gap-2 py-2 px-3 rounded-lg bg-white/90 border border-amber-200">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold border shrink-0 ${badgeClass}">${statusText}</span>
+            <span class="font-mono font-bold text-slate-800 text-xs shrink-0">${escapeHtml(o.orderId)}</span>
+            <span class="text-xs text-slate-600 truncate max-w-[200px] sm:max-w-[320px]">${escapeHtml(o.sku)} (${o.qty || 1} ชิ้น)</span>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button class="btn-quick-manage px-2.5 py-1 text-xs font-semibold rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition" data-id="${o.id}">
+              ตรวจสอบ / จัดการ
+            </button>
+            <button class="btn-quick-delete p-1 text-slate-400 hover:text-rose-600 rounded transition" data-id="${o.id}" title="ลบรายการนี้">
+              <i data-lucide="trash-2" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const bannerHtml = `
+      <div class="p-4 bg-amber-50 border-2 border-amber-400 rounded-2xl shadow-xs space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2 font-bold text-amber-900 text-sm sm:text-base">
+            <i data-lucide="shield-alert" class="w-5 h-5 text-amber-600 shrink-0"></i>
+            <span>⚠️ ตรวจพบ ${problemOrders.length} คำสั่งซื้อที่ไม่มีเลขพัสดุ / ลูกค้ายกเลิก</span>
+          </div>
+          <button class="btn-jump-untracked text-xs font-bold text-amber-800 hover:text-amber-950 underline cursor-pointer">
+            กรองดูเฉพาะรายการนี้ในตาราง →
+          </button>
+        </div>
+        <p class="text-xs text-amber-800 leading-relaxed">
+          ระบบตรวจพบคำสั่งซื้อที่ <b>ไม่มีเลข Tracking หรือมีสถานะยกเลิก</b> ในไฟล์นำเข้า (เช่น ลูกค้ากดยกเลิกใน TikTok/Shopee ก่อนจัดส่ง) 
+          กรุณาตรวจสอบในระบบร้านค้าก่อนแพ็คสินค้าขึ้นรถ เพื่อป้องกันการส่งของผิดพลาด
+        </p>
+        <div class="space-y-1.5 pt-1">
+          ${itemsHtml}
+        </div>
+      </div>
+    `;
+
+    [dashAlert, ordersAlert].forEach((container) => {
+      if (!container) return;
+      container.classList.remove('hidden');
+      container.innerHTML = bannerHtml;
+    });
+
+    document.querySelectorAll('.btn-jump-untracked').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        switchTab('tab-orders');
+        document.querySelectorAll('.filter-pill').forEach((b) => b.classList.remove('active', 'bg-emerald-600', 'text-white'));
+        const untrackedPill = document.querySelector('.filter-pill[data-filter="untracked"]');
+        if (untrackedPill) {
+          untrackedPill.classList.add('active', 'bg-emerald-600', 'text-white');
+        }
+        state.currentFilter = 'untracked';
+        renderOrdersTable();
+      });
+    });
+
+    document.querySelectorAll('.btn-quick-manage').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        openOrderActionModal(id);
+      });
+    });
+
+    document.querySelectorAll('.btn-quick-delete').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        deleteOrder(id);
+      });
+    });
+
+    lucide.createIcons();
   }
 
   function renderOrdersTable() {
@@ -727,10 +905,12 @@
       list = list.filter((o) => getOrderStatus(o) === 'ยังไม่สแกน / ตกหล่น');
     } else if (state.currentFilter === 'scanned') {
       list = list.filter((o) => getOrderStatus(o) === 'สแกนแล้ว' || getOrderStatus(o) === 'สแกนซ้ำ');
+    } else if (state.currentFilter === 'untracked') {
+      list = list.filter((o) => !o.cleanTracking || o.isCancelled || getOrderStatus(o) === 'ไม่มีเลข Tracking (เช็คยกเลิก)' || getOrderStatus(o) === 'ลูกค้ายกเลิกคำสั่งซื้อ');
     } else if (state.currentFilter === 'issues') {
       list = list.filter((o) => {
         const s = getOrderStatus(o);
-        return s === 'ตรวจ Tracking ซ้ำ' || s === 'ข้อมูลไม่ครบ/รูปแบบผิด' || s === 'ตรวจจำนวนสินค้า';
+        return s === 'ตรวจ Tracking ซ้ำ' || s === 'ข้อมูลไม่ครบ/รูปแบบผิด' || s === 'ตรวจจำนวนสินค้า' || s === 'ไม่มีเลข Tracking (เช็คยกเลิก)' || s === 'ลูกค้ายกเลิกคำสั่งซื้อ';
       });
     }
 
@@ -776,6 +956,10 @@
         rowClass += ' row-scanned';
       } else if (status === 'ยังไม่สแกน / ตกหล่น') {
         rowClass += ' row-missing';
+      } else if (status === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
+        rowClass += ' bg-rose-50/60 opacity-75';
+      } else if (status === 'ไม่มีเลข Tracking (เช็คยกเลิก)') {
+        rowClass += ' bg-amber-50/70';
       }
 
       html += `
@@ -792,10 +976,15 @@
           </td>
           <td class="py-3 px-3.5 text-xs text-slate-600">${escapeHtml(order.packer || '-')}</td>
           <td class="py-3 px-3.5 text-center">${badge}</td>
-          <td class="py-3 px-3.5 text-center text-xs">
-            <button class="btn-delete-order p-1 hover:text-rose-600 rounded text-slate-400" data-id="${order.id}" title="ลบรายการนี้">
-              <i data-lucide="trash-2" class="w-4 h-4"></i>
-            </button>
+          <td class="py-3 px-3.5 text-center text-xs whitespace-nowrap">
+            <div class="flex items-center justify-center gap-1">
+              <button class="btn-manage-order p-1 text-slate-400 hover:text-amber-600 rounded transition" data-id="${order.id}" title="จัดการคำสั่งซื้อ/ใส่เลขพัสดุ/เช็คยกเลิก">
+                <i data-lucide="edit-3" class="w-4 h-4"></i>
+              </button>
+              <button class="btn-delete-order p-1 hover:text-rose-600 rounded text-slate-400 transition" data-id="${order.id}" title="ลบรายการนี้">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+              </button>
+            </div>
           </td>
         </tr>
       `;
@@ -803,6 +992,14 @@
 
     tbody.innerHTML = html;
     lucide.createIcons();
+
+    // Setup Manage Buttons
+    tbody.querySelectorAll('.btn-manage-order').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const id = btn.dataset.id;
+        openOrderActionModal(id);
+      });
+    });
 
     // Setup Delete Buttons
     tbody.querySelectorAll('.btn-delete-order').forEach((btn) => {
@@ -878,13 +1075,21 @@
       return '<span class="badge-status bg-purple-50 text-purple-700 border-purple-300"><i data-lucide="repeat" class="w-3.5 h-3.5"></i> สแกนซ้ำ</span>';
     } else if (status === 'ตรวจ Tracking ซ้ำ') {
       return '<span class="badge-status bg-rose-100 text-rose-800 border-rose-400 font-bold"><i data-lucide="copy" class="w-3.5 h-3.5"></i> ตรวจ Tracking ซ้ำ</span>';
+    } else if (status === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
+      return '<span class="badge-status bg-rose-100 text-rose-800 border-rose-300 font-bold line-through"><i data-lucide="x-circle" class="w-3.5 h-3.5 text-rose-600"></i> ลูกค้ายกเลิก</span>';
+    } else if (status === 'ไม่มีเลข Tracking (เช็คยกเลิก)') {
+      return '<span class="badge-status bg-amber-100 text-amber-900 border-amber-300 font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-600"></i> ไม่มี Tracking (เช็คยกเลิก)</span>';
     } else {
       return `<span class="badge-status bg-amber-50 text-amber-700 border-amber-300">${escapeHtml(status)}</span>`;
     }
   }
 
   function getScanMatchBadge(matchResult, isDuplicate) {
-    if (matchResult === 'พบในรายการส่ง') {
+    if (matchResult === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
+      return '<span class="badge-status bg-rose-100 text-rose-800 border-rose-400 font-bold"><i data-lucide="x-octagon" class="w-3.5 h-3.5 text-rose-600"></i> ลูกค้ายกเลิก</span>';
+    } else if (matchResult === 'ไม่มีเลขพัสดุ (เช็คยกเลิก)') {
+      return '<span class="badge-status bg-amber-100 text-amber-900 border-amber-400 font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-600"></i> ไม่มี Tracking (เช็คยกเลิก)</span>';
+    } else if (matchResult === 'พบในรายการส่ง') {
       if (!isDuplicate) {
         return '<span class="badge-status bg-emerald-50 text-emerald-700 border-emerald-300 font-bold"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i> พบในรายการส่ง</span>';
       } else {
@@ -1219,6 +1424,12 @@
       ['ประเภทคำสั่งซื้อ', 'normal or pre order', 'normal or pre-order', 'order type', 'หมายเหตุ', 'buyer message', 'seller note', 'บันทึก', 'note', 'notes']
     );
 
+    // Order Status (High specificity, excludes date/time/tracking)
+    const idxStatus = findExactOrInc(
+      ['สถานะคำสั่งซื้อ', 'สถานะการสั่งซื้อ', 'order status', 'สถานะ', 'status'],
+      ['วัน', 'date', 'เวลา', 'time', 'ขนส่ง', 'tracking', 'carrier', 'delivery']
+    );
+
     return {
       idxOrder,
       idxTrack,
@@ -1228,7 +1439,8 @@
       idxQty,
       idxCarrier,
       idxPacker,
-      idxNotes
+      idxNotes,
+      idxStatus
     };
   }
 
@@ -1309,7 +1521,8 @@
       idxQty: idxQty !== -1 ? idxQty : (denseCols.length >= 5 ? 4 : -1),
       idxCarrier,
       idxPacker: -1,
-      idxNotes
+      idxNotes,
+      idxStatus: -1
     };
   }
 
@@ -1403,6 +1616,7 @@
       let rawCarrier = colIndices.idxCarrier !== -1 && row[colIndices.idxCarrier] !== undefined ? String(row[colIndices.idxCarrier] || '').trim() : '';
       let rawPacker = colIndices.idxPacker !== -1 && row[colIndices.idxPacker] !== undefined ? String(row[colIndices.idxPacker] || '').trim() : '';
       let rawNotes = colIndices.idxNotes !== -1 && row[colIndices.idxNotes] !== undefined ? String(row[colIndices.idxNotes] || '').trim() : '';
+      let rawStatus = colIndices.idxStatus !== -1 && row[colIndices.idxStatus] !== undefined ? String(row[colIndices.idxStatus] || '').trim() : '';
 
       // Skip completely empty rows
       if (!rawOrder && !rawTrack && !rawSku) continue;
@@ -1474,6 +1688,15 @@
       // Clean Tracking
       const cleanTrk = normalizeTracking(rawTrack);
 
+      // Check if status in source file is cancelled
+      const isCancelled = Boolean(
+        rawStatus && (
+          rawStatus.includes('ยกเลิก') || 
+          rawStatus.toLowerCase().includes('cancel') || 
+          rawStatus.toLowerCase().includes('void')
+        )
+      );
+
       result.push({
         id: 'ORD-' + now + '-' + Math.random().toString(36).substring(2, 7) + '-' + r,
         shipDate: shipDate,
@@ -1484,7 +1707,9 @@
         qty: qty,
         carrier: carrier,
         packer: rawPacker || 'ทีมแพ็ค',
-        notes: rawNotes || ''
+        notes: rawNotes || '',
+        orderStatus: rawStatus || '',
+        isCancelled: isCancelled
       });
     }
 
@@ -1505,6 +1730,109 @@
     state.orders = state.orders.filter((o) => o.id !== id);
     SyncService.saveLocalOrders(state.orders);
     renderAll();
+  }
+
+  let activeModalOrderId = null;
+
+  function openOrderActionModal(id) {
+    const order = state.orders.find((o) => o.id === id);
+    if (!order) return;
+
+    activeModalOrderId = id;
+    const modal = $('modal-order-action');
+    if (!modal) return;
+
+    if ($('modal-action-order-id')) $('modal-action-order-id').innerText = order.orderId || '-';
+    if ($('modal-action-sku')) $('modal-action-sku').innerText = `${order.sku || '-'} [${order.carrier || '-'}]`;
+    if ($('modal-action-qty')) $('modal-action-qty').innerText = `${order.qty || 1} ชิ้น`;
+
+    const status = getOrderStatus(order);
+    if ($('modal-action-status')) $('modal-action-status').innerHTML = getStatusBadge(status);
+
+    const inputTrack = $('input-modal-tracking');
+    if (inputTrack) {
+      inputTrack.value = order.trackingId || '';
+      setTimeout(() => inputTrack.focus(), 100);
+    }
+
+    modal.classList.remove('hidden');
+    lucide.createIcons();
+  }
+
+  function setupOrderActionModal() {
+    const modal = $('modal-order-action');
+    const btnClose = $('btn-close-order-action');
+    const btnSaveTracking = $('btn-save-modal-tracking');
+    const inputTracking = $('input-modal-tracking');
+    const btnMarkCancelled = $('btn-mark-modal-cancelled');
+    const btnDeleteModalOrder = $('btn-delete-modal-order');
+
+    if (btnClose && modal) {
+      btnClose.addEventListener('click', () => {
+        modal.classList.add('hidden');
+      });
+    }
+
+    if (btnSaveTracking && inputTracking) {
+      btnSaveTracking.addEventListener('click', () => {
+        if (!activeModalOrderId) return;
+        const order = state.orders.find((o) => o.id === activeModalOrderId);
+        if (!order) return;
+
+        const val = inputTracking.value.trim();
+        if (!val) {
+          alert('กรุณาระบุเลขพัสดุ Tracking ID');
+          return;
+        }
+
+        order.trackingId = val;
+        order.cleanTracking = normalizeTracking(val);
+        order.carrier = detectCarrier(val, order.carrier);
+        order.isCancelled = false; // Reset cancelled flag if valid tracking is supplied
+
+        reconcileScansAndOrders();
+        SyncService.saveLocalOrders(state.orders);
+        renderAll();
+
+        if (modal) modal.classList.add('hidden');
+        alert(`บันทึกเลขพัสดุ ${val} สำหรับคำสั่งซื้อ ${order.orderId} เรียบร้อยแล้วครับ!`);
+      });
+
+      inputTracking.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          btnSaveTracking.click();
+        }
+      });
+    }
+
+    if (btnMarkCancelled) {
+      btnMarkCancelled.addEventListener('click', () => {
+        if (!activeModalOrderId) return;
+        const order = state.orders.find((o) => o.id === activeModalOrderId);
+        if (!order) return;
+
+        if (confirm(`ยืนยันทำเครื่องหมาย "ลูกค้ายกเลิกคำสั่งซื้อ" ${order.orderId} ใช่หรือไม่?\n\n(ระบบจะตัดรายการนี้ออกจากยอดพัสดุที่ต้องจัดส่งวันนี้)`)) {
+          order.isCancelled = true;
+          order.orderStatus = 'ลูกค้ายกเลิกคำสั่งซื้อ';
+          reconcileScansAndOrders();
+          SyncService.saveLocalOrders(state.orders);
+          renderAll();
+
+          if (modal) modal.classList.add('hidden');
+          alert(`ทำเครื่องหมายยกเลิกคำสั่งซื้อ ${order.orderId} เรียบร้อยแล้ว`);
+        }
+      });
+    }
+
+    if (btnDeleteModalOrder) {
+      btnDeleteModalOrder.addEventListener('click', () => {
+        if (!activeModalOrderId) return;
+        const id = activeModalOrderId;
+        if (modal) modal.classList.add('hidden');
+        deleteOrder(id);
+      });
+    }
   }
 
   // =========================================================================

@@ -58,7 +58,7 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.7 Date-Smart</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.8 Cancel-Guard</span>
           </div>
           <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ป้องกันของตกหล่น และตรวจจับบาร์โค้ดสแกนซ้ำแบบเรียลไทม์</p>
         </div>
@@ -140,6 +140,9 @@
     <!-- ========================================================================= -->
     <section id="tab-summary" class="space-y-6">
       
+      <!-- Cancelled & Untracked Orders Alert Banner -->
+      <div id="dashboard-untracked-alert" class="hidden"></div>
+
       <!-- Progress Bar & Milestone Card -->
       <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
@@ -289,6 +292,9 @@
     <!-- ========================================================================= -->
     <section id="tab-orders" class="space-y-4 hidden">
       
+      <!-- Cancelled & Untracked Orders Alert Banner -->
+      <div id="orders-untracked-alert" class="hidden"></div>
+
       <!-- Filter Bar -->
       <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
         
@@ -315,6 +321,10 @@
           <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition flex items-center gap-1.5 shrink-0" data-filter="scanned">
             <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
             สแกนแล้ว (<span id="badge-count-scanned">0</span> กล่อง)
+          </button>
+          <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 transition flex items-center gap-1.5 shrink-0" data-filter="untracked">
+            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+            ไม่มี Tracking / เช็คยกเลิก (<span id="badge-count-untracked">0</span>)
           </button>
           <button class="filter-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition shrink-0" data-filter="issues">
             มีปัญหา
@@ -558,10 +568,63 @@
     </div>
   </div>
 
+  <!-- ========================================================================= -->
+  <!-- MODAL 3: ORDER ACTION & CANCEL GUARD -->
+  <!-- ========================================================================= -->
+  <div id="modal-order-action" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 border border-slate-200">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center font-bold">
+            <i data-lucide="shield-alert" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-900">จัดการคำสั่งซื้อ / ตรวจสอบการยกเลิก</h3>
+            <p class="text-[11px] text-slate-500 font-mono" id="modal-action-order-id">-</p>
+          </div>
+        </div>
+        <button id="btn-close-order-action" class="p-1 text-slate-400 hover:text-slate-600 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div class="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-1.5">
+          <div class="flex justify-between items-start gap-2">
+            <span class="text-slate-500 shrink-0">สินค้า:</span>
+            <span id="modal-action-sku" class="font-bold text-slate-800 text-right">-</span>
+          </div>
+          <div class="flex justify-between"><span class="text-slate-500">จำนวน:</span> <span id="modal-action-qty" class="font-bold text-slate-900">-</span></div>
+          <div class="flex justify-between items-center"><span class="text-slate-500">สถานะ:</span> <span id="modal-action-status" class="font-bold">-</span></div>
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="block font-semibold text-slate-700">ใส่เลขพัสดุ Tracking ID (กรณีได้เลขจากแพลตฟอร์มแล้ว):</label>
+          <div class="flex gap-2">
+            <input type="text" id="input-modal-tracking" placeholder="เช่น 6677..., SPXTH..., TH..." class="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 font-mono">
+            <button id="btn-save-modal-tracking" class="px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition shrink-0">บันทึกเลข</button>
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-100 space-y-2">
+          <div class="text-[11px] text-slate-500 font-medium">หากลูกค้ายกเลิกคำสั่งซื้อในระบบแพลตฟอร์ม:</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="btn-mark-modal-cancelled" class="w-full py-2.5 px-3 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-xl transition flex items-center justify-center gap-1.5">
+              <i data-lucide="ban" class="w-4 h-4 text-amber-600"></i> ทำเครื่องหมายยกเลิก
+            </button>
+            <button id="btn-delete-modal-order" class="w-full py-2.5 px-3 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-xl transition flex items-center justify-center gap-1.5">
+              <i data-lucide="trash-2" class="w-4 h-4 text-rose-600"></i> ลบออเดอร์นี้
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=2.7"></script>
-  <script src="camera-scanner.js?v=2.7"></script>
-  <script src="sync-service.js?v=2.7"></script>
-  <script src="app.js?v=2.7"></script>
+  <script src="audio-feedback.js?v=2.8"></script>
+  <script src="camera-scanner.js?v=2.8"></script>
+  <script src="sync-service.js?v=2.8"></script>
+  <script src="app.js?v=2.8"></script>
 </body>
 </html>
