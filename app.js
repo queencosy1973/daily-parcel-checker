@@ -51,6 +51,18 @@
     state.orders = SyncService.getLocalOrders();
     state.scans = SyncService.getLocalScans();
 
+    // Auto-heal orders that were erroneously assigned 2026-09-18 from TikTok RTS Time
+    let ordersRepaired = 0;
+    state.orders.forEach((o) => {
+      if (o.shipDate === '2026-09-18' && (o.carrier === 'BEST Express' || (o.cleanTracking && o.cleanTracking.startsWith('6677')))) {
+        o.shipDate = '2026-09-25';
+        ordersRepaired++;
+      }
+    });
+    if (ordersRepaired > 0) {
+      SyncService.saveLocalOrders(state.orders);
+    }
+
     const cfg = SyncService.getConfig();
     if (cfg.scannerName) {
       state.scannerName = cfg.scannerName;
@@ -362,13 +374,33 @@
   // DYNAMIC RECONCILIATION & RESOLUTION ENGINE (TWO-WAY RETROACTIVE MATCHING)
   // =========================================================================
   function resolveScanMatch(scan) {
-    const targetDate = scan.scanDate;
-    const clean = scan.cleanTracking;
+    const targetDate = scan.scanDate || state.activeDate;
+    const clean = scan.cleanTracking || normalizeTracking(scan.trackingId);
     const raw = String(scan.trackingId || '').trim();
     if (!clean && !raw) return { result: 'ข้อมูลไม่ครบ/รูปแบบผิด', order: null, statusType: 'invalid' };
 
-    // 1. Try matching by tracking number
-    const matchedOrders = clean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean) : [];
+    // 1. Try matching by tracking number on targetDate first
+    let matchedOrders = clean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === clean) : [];
+
+    // 1b. Fallback: Search across ALL orders on any date if not found on targetDate!
+    if (matchedOrders.length === 0 && clean) {
+      const allMatching = state.orders.filter((o) => o.cleanTracking === clean);
+      if (allMatching.length > 0) {
+        matchedOrders = allMatching;
+        // Auto-adopt order to targetDate so it counts in today's active manifest
+        let ordersUpdated = false;
+        allMatching.forEach((o) => {
+          if (o.shipDate !== targetDate) {
+            o.originalShipDate = o.originalShipDate || o.shipDate;
+            o.shipDate = targetDate;
+            ordersUpdated = true;
+          }
+        });
+        if (ordersUpdated) {
+          SyncService.saveLocalOrders(state.orders);
+        }
+      }
+    }
 
     if (matchedOrders.length >= 1) {
       const uniqueOrderIds = new Set(matchedOrders.map((o) => o.orderId));
@@ -396,13 +428,36 @@
     }
 
     // 2. Try matching by Order ID (in case warehouse scans Order ID barcode or pick slip)
-    const matchedByOrderId = state.orders.filter((o) => 
+    let matchedByOrderId = state.orders.filter((o) => 
       o.shipDate === targetDate && (
         o.orderId === raw || 
         (clean && normalizeTracking(o.orderId) === clean) ||
         (raw.length >= 12 && o.orderId.includes(raw))
       )
     );
+
+    // 2b. Fallback Order ID across ALL dates
+    if (matchedByOrderId.length === 0) {
+      const allMatchingOrderId = state.orders.filter((o) => 
+        o.orderId === raw || 
+        (clean && normalizeTracking(o.orderId) === clean) ||
+        (raw.length >= 12 && o.orderId.includes(raw))
+      );
+      if (allMatchingOrderId.length > 0) {
+        matchedByOrderId = allMatchingOrderId;
+        let ordersUpdated = false;
+        allMatchingOrderId.forEach((o) => {
+          if (o.shipDate !== targetDate) {
+            o.originalShipDate = o.originalShipDate || o.shipDate;
+            o.shipDate = targetDate;
+            ordersUpdated = true;
+          }
+        });
+        if (ordersUpdated) {
+          SyncService.saveLocalOrders(state.orders);
+        }
+      }
+    }
 
     if (matchedByOrderId.length >= 1) {
       const order = matchedByOrderId[0];
@@ -469,7 +524,7 @@
   }
 
   // =========================================================================
-  // BARCODE SCANNING & AUTO-MATCHING ENGINE
+  // BARCODE SCANNING & AUTO-MATCHING ENGINE (WITH SCAN-LOCK DUPLICATE BLOCKING)
   // =========================================================================
   async function processScannedBarcode(rawBarcode, source = 'ปืนสแกน') {
     AudioFeedback.init(); // Ensure Web Audio context is alive
@@ -484,7 +539,7 @@
     state.scannerName = scannerName;
     SyncService.saveConfig({ ...SyncService.getConfig(), scannerName });
 
-    // Dynamically resolve match against today's orders (checks Tracking ID, then Order ID)
+    // Dynamically resolve match against orders (checks Tracking ID, then Order ID, across dates)
     const dummyScan = { scanDate: targetDate, cleanTracking: clean, trackingId: raw };
     const resolution = resolveScanMatch(dummyScan);
     const matchedOrder = resolution.order;
@@ -493,9 +548,31 @@
     // Use clean tracking from scan OR from matched order if scanned by Order ID
     const effectiveClean = clean || (matchedOrder ? matchedOrder.cleanTracking : '');
 
-    // Check if this tracking was already scanned today
-    const existingScansToday = effectiveClean ? state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === effectiveClean) : [];
+    // CHECK IF ALREADY SCANNED TODAY -> HARD BLOCK DUPLICATES!
+    const existingScansToday = effectiveClean ? state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === effectiveClean && !s.isBlocked) : [];
     const isDuplicate = existingScansToday.length > 0;
+
+    if (isDuplicate) {
+      // 🚫 HARD BLOCK DUPLICATE SCAN!
+      const prevScan = existingScansToday[0];
+      AudioFeedback.blocked();
+      CameraScanner.flashBox('blocked');
+
+      // Visual feedback on HUD and Modal
+      showDuplicateBlockedFeedback(raw, prevScan, matchedOrder);
+
+      // Reset and refocus gun input field immediately so next box can be scanned without mouse
+      const gunInput = $('input-barcode-gun');
+      if (gunInput) {
+        gunInput.value = '';
+        gunInput.classList.add('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
+        setTimeout(() => {
+          gunInput.classList.remove('ring-4', 'ring-rose-500', 'border-rose-600', 'bg-rose-50');
+          gunInput.focus();
+        }, 1200);
+      }
+      return; // DO NOT add to state.scans! Prevent duplicate parcels from being dispatched!
+    }
 
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0];
@@ -509,7 +586,7 @@
       scanner: scannerName,
       source: source,
       matchResult: matchResult,
-      isDuplicateScan: isDuplicate,
+      isDuplicateScan: false,
       matchedOrderId: matchedOrder ? matchedOrder.orderId : '',
       matchedSku: matchedOrder ? matchedOrder.sku : '',
       matchedQty: matchedOrder ? matchedOrder.qty : '',
@@ -522,10 +599,61 @@
 
     // Trigger Audio & Visual HUD Feedback
     const matchedCount = effectiveClean ? state.orders.filter((o) => o.shipDate === targetDate && o.cleanTracking === effectiveClean).length : 0;
-    showScanFeedback(newScanRecord, isDuplicate, matchedCount);
+    showScanFeedback(newScanRecord, false, matchedCount);
 
     // Re-render UI
     renderAll();
+  }
+
+  function showDuplicateBlockedFeedback(trackingId, prevScan, matchedOrder) {
+    const hud = $('scan-hud-banner');
+    const hudMobile = $('scan-hud-mobile');
+
+    const orderId = prevScan.matchedOrderId || (matchedOrder ? matchedOrder.orderId : '-');
+    const sku = prevScan.matchedSku || (matchedOrder ? `${matchedOrder.sku} (${matchedOrder.qty} ชิ้น)` : '-');
+    const carrier = prevScan.matchedCarrier || (matchedOrder ? matchedOrder.carrier : '-');
+
+    [hud, hudMobile].forEach((el) => {
+      if (!el) return;
+      el.className = 'p-3.5 rounded-xl border-2 border-rose-600 bg-rose-100 text-rose-950 shadow-lg flex items-start gap-3 animate-pulse';
+      el.innerHTML = `
+        <div class="shrink-0 mt-0.5 text-rose-600">
+          <i data-lucide="shield-alert" class="w-6 h-6"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="font-bold text-sm sm:text-base text-rose-900 leading-snug">🚫 บล็อกการสแกนซ้ำ! พัสดุนี้ถูกสแกนขึ้นรถไปแล้ว</div>
+          <div class="text-xs sm:text-sm text-rose-800 font-mono mt-0.5">Tracking: ${escapeHtml(trackingId)} | Order: ${escapeHtml(orderId)}</div>
+          <div class="text-[11px] sm:text-xs text-rose-700 mt-0.5">สแกนไปแล้วเมื่อ: <strong>${escapeHtml(prevScan.scanTime || '')} น.</strong> โดย <strong>${escapeHtml(prevScan.scanner || '-')}</strong></div>
+          <div class="text-[11px] text-rose-900 font-bold mt-1">⚠️ ระบบบล็อกการยิงซ้ำอัตโนมัติ ห้ามนำสินค้ากล่องนี้ขึ้นรถเด็ดขาด!</div>
+        </div>
+      `;
+    });
+
+    // Also show modal popup alert
+    const modal = $('modal-duplicate-blocked');
+    if (modal) {
+      if ($('blocked-tracking-id')) $('blocked-tracking-id').innerText = trackingId;
+      if ($('blocked-order-id')) $('blocked-order-id').innerText = orderId;
+      if ($('blocked-sku')) $('blocked-sku').innerText = sku;
+      if ($('blocked-carrier')) $('blocked-carrier').innerText = carrier;
+      if ($('blocked-scan-time')) $('blocked-scan-time').innerText = (prevScan.scanTime || '') + ' น.';
+      if ($('blocked-scanner')) $('blocked-scanner').innerText = prevScan.scanner || '-';
+      modal.classList.remove('hidden');
+
+      // Auto dismiss on keypress or after 3.5s so operator can scan next parcel
+      const closeTimer = setTimeout(() => {
+        modal.classList.add('hidden');
+      }, 3500);
+
+      const dismissHandler = () => {
+        clearTimeout(closeTimer);
+        modal.classList.add('hidden');
+        window.removeEventListener('keydown', dismissHandler);
+      };
+      window.addEventListener('keydown', dismissHandler, { once: true });
+    }
+
+    lucide.createIcons();
   }
 
   function showScanFeedback(scanRecord, isDuplicate, matchCount) {
@@ -554,40 +682,21 @@
       title = `⚠️ ระวัง! ออเดอร์นี้ไม่มีเลข Tracking (เช็คยกเลิก): ${scanRecord.matchedOrderId || scanRecord.trackingId}`;
       subtitle = `สินค้า: ${scanRecord.matchedSku || '-'} (${scanRecord.matchedQty || 1} ชิ้น) | ยังไม่มีเลขพัสดุในระบบ (อาจถูกลูกค้ายกเลิกแล้ว) กรุณาเช็คแพลตฟอร์มก่อนส่ง!`;
     } else if (scanRecord.matchResult === 'พบในรายการส่ง') {
-      if (!isDuplicate) {
-        // SUCCESS ✅
-        AudioFeedback.success();
-        CameraScanner.flashBox('success');
-        bgClass = 'bg-emerald-50 border-emerald-500 text-emerald-900';
-        iconName = 'check-circle-2';
-        title = `สแกนสำเร็จ: ${scanRecord.trackingId}`;
-        subtitle = `คำสั่งซื้อ: ${scanRecord.matchedOrderId || '-'} | ขนส่ง: ${scanRecord.matchedCarrier || '-'} | สินค้า: ${scanRecord.matchedSku || '-'} (${scanRecord.matchedQty || 1} ชิ้น)`;
-      } else {
-        // DUPLICATE SCAN 🔁
-        AudioFeedback.duplicate();
-        CameraScanner.flashBox('duplicate');
-        bgClass = 'bg-amber-50 border-amber-500 text-amber-900';
-        iconName = 'alert-triangle';
-        title = `⚠️ สแกนซ้ำ: ${scanRecord.trackingId}`;
-        subtitle = `เลขพัสดุนี้ถูกสแกนไปแล้วในวันนี้! (คำสั่งซื้อ: ${scanRecord.matchedOrderId || '-'})`;
-      }
+      // SUCCESS ✅
+      AudioFeedback.success();
+      CameraScanner.flashBox('success');
+      bgClass = 'bg-emerald-50 border-emerald-500 text-emerald-900';
+      iconName = 'check-circle-2';
+      title = `สแกนสำเร็จ: ${scanRecord.trackingId}`;
+      subtitle = `คำสั่งซื้อ: ${scanRecord.matchedOrderId || '-'} | ขนส่ง: ${scanRecord.matchedCarrier || '-'} | สินค้า: ${scanRecord.matchedSku || '-'} (${scanRecord.matchedQty || 1} ชิ้น)`;
     } else if (scanRecord.matchResult === 'รอนำเข้าคำสั่งซื้อ' || scanRecord.matchResult === 'รอนำเข้าออเดอร์') {
       // PENDING ORDERS IMPORT ⏳ (Scan before order manifest is keyed)
-      if (!isDuplicate) {
-        AudioFeedback.pending();
-        CameraScanner.flashBox('pending');
-        bgClass = 'bg-sky-50 border-sky-500 text-sky-900';
-        iconName = 'clock';
-        title = `📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scanRecord.trackingId}`;
-        subtitle = `บันทึกเวลาเรียบร้อย (ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าข้อมูลคำสั่งซื้อ)`;
-      } else {
-        AudioFeedback.duplicate();
-        CameraScanner.flashBox('duplicate');
-        bgClass = 'bg-amber-50 border-amber-500 text-amber-900';
-        iconName = 'alert-triangle';
-        title = `⚠️ สแกนซ้ำ: ${scanRecord.trackingId}`;
-        subtitle = `เลขพัสดุนี้ถูกสแกนไปแล้วในวันนี้ (สถานะ: รอนำเข้าออเดอร์)`;
-      }
+      AudioFeedback.pending();
+      CameraScanner.flashBox('pending');
+      bgClass = 'bg-sky-50 border-sky-500 text-sky-900';
+      iconName = 'clock';
+      title = `📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scanRecord.trackingId}`;
+      subtitle = `บันทึกเวลาเรียบร้อย (ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าข้อมูลคำสั่งซื้อ)`;
     } else if (scanRecord.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
       // NOT FOUND 🚨 (fallback if any)
       AudioFeedback.error();
@@ -622,21 +731,33 @@
   }
 
   function handleRemoteScan(remoteScan) {
-    // Received scan from another device via Supabase/BroadcastChannel
-    // Check if we already have it
-    const exists = state.scans.some((s) => s.id === remoteScan.id);
-    if (!exists) {
-      state.scans.unshift(remoteScan);
-      SyncService.saveLocalScans(state.scans);
-      renderAll();
+    // Re-resolve match dynamically using desktop's state.orders
+    const resolution = resolveScanMatch(remoteScan);
+    if (resolution.order) {
+      remoteScan.matchedOrderId = resolution.order.orderId;
+      remoteScan.matchedSku = resolution.order.sku;
+      remoteScan.matchedQty = resolution.order.qty;
+      remoteScan.matchedCarrier = resolution.order.carrier;
+      remoteScan.matchResult = resolution.result;
+    } else if (!remoteScan.matchResult) {
+      remoteScan.matchResult = resolution.result;
+    }
 
-      // Show brief notification on desktop
-      const toast = $('desktop-remote-toast');
-      if (toast) {
-        toast.innerText = `📲 มือถือ (${remoteScan.scanner}) สแกน: ${remoteScan.trackingId}`;
-        toast.classList.remove('hidden');
-        setTimeout(() => toast.classList.add('hidden'), 3500);
-      }
+    const existsIdx = state.scans.findIndex((s) => s.id === remoteScan.id);
+    if (existsIdx !== -1) {
+      state.scans[existsIdx] = remoteScan;
+    } else {
+      state.scans.unshift(remoteScan);
+    }
+    SyncService.saveLocalScans(state.scans);
+    renderAll();
+
+    // Show brief notification on desktop
+    const toast = $('desktop-remote-toast');
+    if (toast) {
+      toast.innerText = `📱 มือถือ (${remoteScan.scanner}) สแกน: ${remoteScan.trackingId} [${remoteScan.matchResult}]`;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 3500);
     }
   }
 

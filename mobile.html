@@ -34,7 +34,7 @@
       <div>
         <div class="flex items-center gap-1.5">
           <h1 class="text-sm font-bold text-white tracking-tight leading-tight">จุดสแกนพัสดุหน้ารถ</h1>
-          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v2.8</span>
+          <span class="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">v2.9 Scan-Lock</span>
         </div>
         <p class="text-[10px] text-emerald-400 font-mono" id="mobile-date-display">2026-09-23</p>
       </div>
@@ -128,9 +128,9 @@
   </main>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=2.6"></script>
-  <script src="camera-scanner.js?v=2.6"></script>
-  <script src="sync-service.js?v=2.6"></script>
+  <script src="audio-feedback.js?v=2.9"></script>
+  <script src="camera-scanner.js?v=2.9"></script>
+  <script src="sync-service.js?v=2.9"></script>
   <script>
     (function () {
       'use strict';
@@ -138,7 +138,35 @@
       const $ = (id) => document.getElementById(id);
       let orders = [];
       let scans = [];
-      const today = new Date().toISOString().split('T')[0];
+
+      function getLocalDateString() {
+        const d = new Date();
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+      const today = getLocalDateString();
+
+      function normalizeTracking(val) {
+        if (!val) return '';
+        return String(val)
+          .trim()
+          .toUpperCase()
+          .replace(/[\u200B-\u200D\uFEFF]/g, '')
+          .replace(/[\s\u00A0]/g, '')
+          .replace(/[^A-Z0-9]/g, '');
+      }
+
+      function escapeHtml(str) {
+        if (!str && str !== 0) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
 
       if ($('mobile-date-display')) $('mobile-date-display').innerText = today;
 
@@ -215,16 +243,34 @@
         });
       }
 
-      // Scan Handler
+      // Scan Handler (with SCAN-LOCK Hard Duplicate Blocking & Cross-Date Match)
       function handleMobileScan(rawBarcode) {
         AudioFeedback.init();
-        const clean = String(rawBarcode || '').replace(/[\s\u00A0]/g, '').toUpperCase();
-        if (!clean) return;
+        const clean = normalizeTracking(rawBarcode);
+        const raw = String(rawBarcode || '').trim();
+        if (!clean && !raw) return;
 
         const scannerName = ($('input-mobile-scanner-name')?.value || 'มือถือหน้ารถ').trim();
 
-        // 1. Query today's orders by tracking
+        // 1. HARD BLOCK DUPLICATE SCANS
+        const existingScan = clean ? scans.find(s => s.scanDate === today && s.cleanTracking === clean && !s.isBlocked) : null;
+        if (existingScan) {
+          // 🚫 DUPLICATE DETECTED - HARD REJECT!
+          AudioFeedback.blocked();
+          CameraScanner.flashBox('blocked');
+          if (navigator.vibrate) {
+            navigator.vibrate([250, 100, 250, 100, 400]);
+          }
+          showMobileBlockedAlert(raw, existingScan);
+          return; // DO NOT add to scans! DO NOT broadcast!
+        }
+
+        // 2. Query orders by tracking (Check today first, then fallback across all dates)
         let matchedOrders = clean ? orders.filter(o => o.shipDate === today && o.cleanTracking === clean) : [];
+        if (matchedOrders.length === 0 && clean) {
+          matchedOrders = orders.filter(o => o.cleanTracking === clean);
+        }
+
         let matchedOrder = null;
         let matchResult = '';
 
@@ -238,9 +284,13 @@
             matchResult = 'รายการส่งซ้ำ';
           }
         } else {
-          // 2. Query today's orders by Order ID (in case warehouse scans Order ID barcode or pick slip)
+          // 3. Query orders by Order ID (Check today first, then fallback across all dates)
           const rawTrim = rawBarcode.trim();
-          const matchedByOrderId = orders.filter(o => o.shipDate === today && (o.orderId === rawTrim || (clean && String(o.orderId || '').replace(/[\s\u00A0]/g, '').toUpperCase() === clean)));
+          let matchedByOrderId = orders.filter(o => o.shipDate === today && (o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean)));
+          if (matchedByOrderId.length === 0) {
+            matchedByOrderId = orders.filter(o => o.orderId === rawTrim || (clean && normalizeTracking(o.orderId) === clean));
+          }
+
           if (matchedByOrderId.length >= 1) {
             matchedOrder = matchedByOrderId[0];
             if (matchedOrder.isCancelled || (matchedOrder.orderStatus && (matchedOrder.orderStatus.includes('ยกเลิก') || matchedOrder.orderStatus.toLowerCase().includes('cancel')))) {
@@ -251,7 +301,6 @@
               matchResult = 'พบในรายการส่ง';
             }
           } else {
-            // Unconditionally set to รอนำเข้าออเดอร์ for any unmatched barcode
             matchResult = 'รอนำเข้าออเดอร์';
           }
         }
@@ -263,12 +312,12 @@
           id: 'SCAN-MOB-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
           scanDate: today,
           scanTime: timeStr,
-          trackingId: rawBarcode.trim(),
+          trackingId: raw,
           cleanTracking: clean,
           scanner: scannerName,
           source: 'กล้องมือถือ',
           matchResult: matchResult,
-          isDuplicateScan: isDuplicate,
+          isDuplicateScan: false,
           matchedOrderId: matchedOrder ? matchedOrder.orderId : '',
           matchedSku: matchedOrder ? matchedOrder.sku : '',
           matchedQty: matchedOrder ? matchedOrder.qty : '',
@@ -279,9 +328,26 @@
         SyncService.addLocalScan(newScan);
 
         // Feedback
-        showFeedback(newScan, isDuplicate, matchedOrders.length);
+        showFeedback(newScan, false, matchedOrders.length);
         updateScannedCount();
         renderMobileScans();
+      }
+
+      function showMobileBlockedAlert(tracking, existingScan) {
+        const hud = $('scan-hud-mobile');
+        if (!hud) return;
+        hud.className = 'p-3.5 rounded-xl border-4 border-rose-600 bg-rose-950 text-rose-100 flex items-start gap-3 shadow-xl animate-pulse';
+        hud.innerHTML = `
+          <div class="shrink-0 text-rose-400 mt-0.5"><i data-lucide="shield-alert" class="w-7 h-7"></i></div>
+          <div class="flex-1 min-w-0">
+            <div class="font-black text-base text-rose-200">🚫 บล็อกการยิงซ้ำ!</div>
+            <div class="text-xs text-rose-300 font-mono mt-0.5 truncate">Tracking: ${escapeHtml(tracking)}</div>
+            <div class="text-xs text-rose-300 mt-0.5">Order: ${escapeHtml(existingScan.matchedOrderId || '-')} | SKU: ${escapeHtml(existingScan.matchedSku || '-')}</div>
+            <div class="text-[11px] text-rose-400 mt-1 font-semibold">สแกนไปแล้วเมื่อ: ${escapeHtml(existingScan.scanTime || '')} น. โดย: ${escapeHtml(existingScan.scanner || '-')}</div>
+            <div class="text-[11px] font-bold text-rose-200 mt-1 bg-rose-900/80 px-2 py-0.5 rounded border border-rose-700">⚠️ ห้ามนำพัสดุกล่องนี้ขึ้นรถเด็ดขาด!</div>
+          </div>
+        `;
+        lucide.createIcons();
       }
 
       function showFeedback(scan, isDuplicate, matchCount) {
@@ -296,7 +362,7 @@
             <div class="shrink-0 text-rose-400 mt-0.5"><i data-lucide="x-octagon" class="w-6 h-6"></i></div>
             <div class="flex-1 min-w-0">
               <div class="font-bold text-sm text-rose-100">🚫 หยุดส่ง! ลูกค้ายกเลิกคำสั่งซื้อแล้ว</div>
-              <div class="text-xs text-rose-300 mt-0.5 truncate">Order: ${scan.matchedOrderId || scan.trackingId} | SKU: ${scan.matchedSku || '-'} (${scan.matchedQty || 1} ชิ้น)</div>
+              <div class="text-xs text-rose-300 mt-0.5 truncate">Order: ${escapeHtml(scan.matchedOrderId || scan.trackingId)} | SKU: ${escapeHtml(scan.matchedSku || '-')} (${scan.matchedQty || 1} ชิ้น)</div>
               <div class="text-[11px] text-rose-400 font-bold mt-1">คำสั่งซื้อถูกยกเลิก ห้ามนำสินค้าขึ้นรถเด็ดขาด!</div>
             </div>
           `;
@@ -308,78 +374,40 @@
             <div class="shrink-0 text-amber-400 mt-0.5"><i data-lucide="alert-triangle" class="w-6 h-6"></i></div>
             <div class="flex-1 min-w-0">
               <div class="font-bold text-sm text-amber-100">⚠️ ระวัง! ออเดอร์นี้ไม่มีเลข Tracking</div>
-              <div class="text-xs text-amber-300 mt-0.5 truncate">Order: ${scan.matchedOrderId || scan.trackingId} | SKU: ${scan.matchedSku || '-'} (${scan.matchedQty || 1} ชิ้น)</div>
+              <div class="text-xs text-amber-300 mt-0.5 truncate">Order: ${escapeHtml(scan.matchedOrderId || scan.trackingId)} | SKU: ${escapeHtml(scan.matchedSku || '-')} (${scan.matchedQty || 1} ชิ้น)</div>
               <div class="text-[11px] text-amber-400 font-bold mt-1">กรุณาเช็คในระบบแพลตฟอร์มว่าลูกค้ายกเลิกหรือไม่ก่อนส่ง!</div>
             </div>
           `;
         } else if (scan.matchResult === 'พบในรายการส่ง') {
-          if (!isDuplicate) {
-            AudioFeedback.success();
-            CameraScanner.flashBox('success');
-            hud.className = 'p-3.5 rounded-xl border-2 border-emerald-500 bg-emerald-950/80 text-emerald-200 flex items-start gap-3 shadow-md';
-            hud.innerHTML = `
-              <div class="shrink-0 text-emerald-400 mt-0.5"><i data-lucide="check-circle-2" class="w-6 h-6"></i></div>
-              <div class="flex-1 min-w-0">
-                <div class="font-bold text-sm text-emerald-100">✅ สแกนสำเร็จ: ${scan.trackingId}</div>
-                <div class="text-xs text-emerald-300/90 mt-0.5 truncate">Order: ${scan.matchedOrderId || '-'} | ขนส่ง: ${scan.matchedCarrier || '-'} | SKU: ${scan.matchedSku || '-'} (${scan.matchedQty} ชิ้น)</div>
-              </div>
-            `;
-          } else {
-            AudioFeedback.duplicate();
-            CameraScanner.flashBox('duplicate');
-            hud.className = 'p-3.5 rounded-xl border-2 border-amber-500 bg-amber-950/80 text-amber-200 flex items-start gap-3 shadow-md';
-            hud.innerHTML = `
-              <div class="shrink-0 text-amber-400 mt-0.5"><i data-lucide="alert-triangle" class="w-6 h-6"></i></div>
-              <div class="flex-1 min-w-0">
-                <div class="font-bold text-sm text-amber-100">🔁 สแกนซ้ำ: ${scan.trackingId}</div>
-                <div class="text-xs text-amber-300/90 mt-0.5 truncate">พัสดุนี้ถูกสแกนไปแล้วในวันนี้! (Order: ${scan.matchedOrderId || '-'})</div>
-              </div>
-            `;
-          }
-        } else if (scan.matchResult === 'รอนำเข้าคำสั่งซื้อ' || scan.matchResult === 'รอนำเข้าออเดอร์') {
-          if (!isDuplicate) {
-            AudioFeedback.pending();
-            CameraScanner.flashBox('pending');
-            hud.className = 'p-3.5 rounded-xl border-2 border-sky-500 bg-sky-950/80 text-sky-200 flex items-start gap-3 shadow-md';
-            hud.innerHTML = `
-              <div class="shrink-0 text-sky-400 mt-0.5"><i data-lucide="clock" class="w-6 h-6"></i></div>
-              <div class="flex-1 min-w-0">
-                <div class="font-bold text-sm text-sky-100">📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${scan.trackingId}</div>
-                <div class="text-xs text-sky-300/90 mt-0.5">บันทึกเวลาสแกนเรียบร้อย ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าออเดอร์</div>
-              </div>
-            `;
-          } else {
-            AudioFeedback.duplicate();
-            CameraScanner.flashBox('duplicate');
-            hud.className = 'p-3.5 rounded-xl border-2 border-amber-500 bg-amber-950/80 text-amber-200 flex items-start gap-3 shadow-md';
-            hud.innerHTML = `
-              <div class="shrink-0 text-amber-400 mt-0.5"><i data-lucide="alert-triangle" class="w-6 h-6"></i></div>
-              <div class="flex-1 min-w-0">
-                <div class="font-bold text-sm text-amber-100">🔁 สแกนซ้ำ: ${scan.trackingId}</div>
-                <div class="text-xs text-amber-300/90 mt-0.5 truncate">พัสดุนี้ถูกสแกนไปแล้วในวันนี้ (สถานะ: รอนำเข้าออเดอร์)</div>
-              </div>
-            `;
-          }
-        } else if (scan.matchResult === 'ไม่พบในรายการส่งของวันนี้') {
-          AudioFeedback.error();
-          CameraScanner.flashBox('error');
-          hud.className = 'p-3.5 rounded-xl border-2 border-rose-500 bg-rose-950/80 text-rose-200 flex items-start gap-3 shadow-md';
+          AudioFeedback.success();
+          CameraScanner.flashBox('success');
+          hud.className = 'p-3.5 rounded-xl border-2 border-emerald-500 bg-emerald-950/80 text-emerald-200 flex items-start gap-3 shadow-md';
           hud.innerHTML = `
-            <div class="shrink-0 text-rose-400 mt-0.5"><i data-lucide="x-circle" class="w-6 h-6"></i></div>
+            <div class="shrink-0 text-emerald-400 mt-0.5"><i data-lucide="check-circle-2" class="w-6 h-6"></i></div>
             <div class="flex-1 min-w-0">
-              <div class="font-bold text-sm text-rose-100">🚨 ไม่พบในรายการส่งวันนี้: ${scan.trackingId}</div>
-              <div class="text-xs text-rose-300/90 mt-0.5">ไม่อยู่ในรายการส่งของวันนี้ (หากยังไม่ได้คีย์ออเดอร์เข้าระบบ เมื่อคีย์เข้าจะจับคู่ย้อนหลังให้อัตโนมัติ)</div>
+              <div class="font-bold text-sm text-emerald-100">✅ สแกนสำเร็จ: ${escapeHtml(scan.trackingId)}</div>
+              <div class="text-xs text-emerald-300/90 mt-0.5 truncate">Order: ${escapeHtml(scan.matchedOrderId || '-')} | ขนส่ง: ${escapeHtml(scan.matchedCarrier || '-')} | SKU: ${escapeHtml(scan.matchedSku || '-')} (${scan.matchedQty} ชิ้น)</div>
+            </div>
+          `;
+        } else if (scan.matchResult === 'รอนำเข้าคำสั่งซื้อ' || scan.matchResult === 'รอนำเข้าออเดอร์') {
+          AudioFeedback.pending();
+          CameraScanner.flashBox('pending');
+          hud.className = 'p-3.5 rounded-xl border-2 border-sky-500 bg-sky-950/80 text-sky-200 flex items-start gap-3 shadow-md';
+          hud.innerHTML = `
+            <div class="shrink-0 text-sky-400 mt-0.5"><i data-lucide="clock" class="w-6 h-6"></i></div>
+            <div class="flex-1 min-w-0">
+              <div class="font-bold text-sm text-sky-100">📦 บันทึกแล้ว (รอนำเข้าออเดอร์): ${escapeHtml(scan.trackingId)}</div>
+              <div class="text-xs text-sky-300/90 mt-0.5">บันทึกเวลาสแกนเรียบร้อย ระบบจะจับคู่ย้อนหลังให้อัตโนมัติเมื่อนำเข้าออเดอร์</div>
             </div>
           `;
         } else {
-          AudioFeedback.warning();
-          CameraScanner.flashBox('duplicate');
+          AudioFeedback.error();
+          CameraScanner.flashBox('error');
           hud.className = 'p-3.5 rounded-xl border-2 border-purple-500 bg-purple-950/80 text-purple-200 flex items-start gap-3 shadow-md';
           hud.innerHTML = `
-            <div class="shrink-0 text-purple-400 mt-0.5"><i data-lucide="alert-circle" class="w-6 h-6"></i></div>
+            <div class="shrink-0 text-purple-400 mt-0.5"><i data-lucide="help-circle" class="w-6 h-6"></i></div>
             <div class="flex-1 min-w-0">
-              <div class="font-bold text-sm text-purple-100">⚠️ รายการส่งซ้ำ: ${scan.trackingId}</div>
-              <div class="text-xs text-purple-300/90 mt-0.5 truncate">พบเลขพัสดุนี้ซ้ำในรายการส่ง ${matchCount} รายการ!</div>
+              <div class="font-bold text-sm text-purple-100">${escapeHtml(scan.matchResult)}: ${escapeHtml(scan.trackingId)}</div>
             </div>
           `;
         }

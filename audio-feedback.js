@@ -184,11 +184,47 @@ const AudioFeedback = (function () {
     }
   }
 
+  // Play Blocked Rejection Siren (3 rapid aggressive sawtooth buzzes) - Duplicate scan blocked!
+  function blocked() {
+    try {
+      const ctx = getContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+
+      // 3 rapid aggressive error buzz pulses
+      [0, 0.16, 0.32].forEach((offset) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, now + offset);
+        osc.frequency.linearRampToValueAtTime(80, now + offset + 0.12);
+
+        gain.gain.setValueAtTime(0.5, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.13);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.13);
+      });
+
+      if (navigator.vibrate) {
+        navigator.vibrate([250, 100, 250, 100, 400]);
+      }
+    } catch (e) {
+      console.warn('AudioFeedback blocked error:', e);
+    }
+  }
+
   return {
     init: getContext,
     success,
     error,
     duplicate,
+    blocked,
     warning,
     pending
   };

@@ -58,7 +58,7 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.8 Cancel-Guard</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v2.9 Scan-Lock</span>
           </div>
           <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ป้องกันของตกหล่น และตรวจจับบาร์โค้ดสแกนซ้ำแบบเรียลไทม์</p>
         </div>
@@ -387,6 +387,15 @@
               </button>
             </div>
 
+            <!-- Scan-Lock Duplicate Shield Status -->
+            <div class="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold">
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span class="flex items-center gap-1.5"><i data-lucide="shield-check" class="w-4 h-4 text-emerald-600"></i> บล็อกสแกนซ้ำ (Scan-Lock):</span>
+              </div>
+              <span class="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-bold">เปิดใช้งาน 100%</span>
+            </div>
+
             <!-- Operator Name Input -->
             <div>
               <label class="block text-[11px] font-bold text-slate-500 uppercase mb-1">ผู้สแกน / ประจำจุด</label>
@@ -621,10 +630,45 @@
     </div>
   </div>
 
+  <!-- ========================================================================= -->
+  <!-- MODAL: URGENT DUPLICATE BLOCKED ALERT (SCAN-LOCK) -->
+  <!-- ========================================================================= -->
+  <div id="modal-duplicate-blocked" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-3xl max-w-md w-full border-4 border-rose-600 shadow-2xl p-6 text-center space-y-4 animate-bounce-short">
+      <div class="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 mx-auto flex items-center justify-center shadow-inner">
+        <i data-lucide="shield-alert" class="w-10 h-10 animate-pulse"></i>
+      </div>
+      <div>
+        <h3 class="text-xl font-black text-rose-700">🚫 บล็อกการสแกนซ้ำ!</h3>
+        <p class="text-xs text-rose-600 font-semibold mt-0.5">พัสดุนี้ถูกสแกนขึ้นรถไปแล้ว ไม่อนุญาตให้ยิงซ้ำเด็ดขาด</p>
+      </div>
+      <div class="bg-rose-50/80 rounded-2xl p-4 border border-rose-200 text-left space-y-2 text-xs font-mono">
+        <div class="flex justify-between items-center"><span class="text-slate-500 font-sans">Tracking ID:</span> <span id="blocked-tracking-id" class="font-bold text-slate-900 text-sm">-</span></div>
+        <div class="flex justify-between items-center"><span class="text-slate-500 font-sans">คำสั่งซื้อ:</span> <span id="blocked-order-id" class="font-bold text-slate-900">-</span></div>
+        <div class="flex justify-between items-start gap-2"><span class="text-slate-500 font-sans shrink-0">สินค้า:</span> <span id="blocked-sku" class="font-bold text-slate-800 text-right font-sans">-</span></div>
+        <div class="flex justify-between items-center"><span class="text-slate-500 font-sans">ขนส่ง:</span> <span id="blocked-carrier" class="font-bold text-slate-800 font-sans">-</span></div>
+        <div class="pt-2 border-t border-rose-200 flex justify-between items-center">
+          <span class="text-rose-700 font-sans font-medium">สแกนไปแล้วเมื่อ:</span>
+          <span id="blocked-scan-time" class="font-bold text-rose-900">-</span>
+        </div>
+        <div class="flex justify-between items-center">
+          <span class="text-rose-700 font-sans font-medium">ผู้สแกนเดิม:</span>
+          <span id="blocked-scanner" class="font-bold text-rose-900 font-sans">-</span>
+        </div>
+      </div>
+      <div class="p-2.5 rounded-xl bg-rose-600 text-white text-xs font-bold shadow-md">
+        ⚠️ ป้องกันสินค้าซ้ำซ้อน ห้ามนำกล่องนี้ขึ้นรถเด็ดขาด!
+      </div>
+      <button onclick="document.getElementById('modal-duplicate-blocked').classList.add('hidden')" class="w-full py-3 px-4 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition">
+        รับทราบ (ปิดหน้าต่าง / ยิงกล่องถัดไป)
+      </button>
+    </div>
+  </div>
+
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=2.8"></script>
-  <script src="camera-scanner.js?v=2.8"></script>
-  <script src="sync-service.js?v=2.8"></script>
-  <script src="app.js?v=2.8"></script>
+  <script src="audio-feedback.js?v=2.9"></script>
+  <script src="camera-scanner.js?v=2.9"></script>
+  <script src="sync-service.js?v=2.9"></script>
+  <script src="app.js?v=2.9"></script>
 </body>
 </html>

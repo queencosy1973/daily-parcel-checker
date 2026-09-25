@@ -143,10 +143,12 @@ const CameraScanner = (function () {
     const box = document.getElementById(currentBoxId);
     if (!box) return;
 
-    box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500');
+    box.classList.remove('ring-4', 'ring-8', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'ring-rose-600', 'border-rose-500', 'border-rose-600', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500', 'animate-pulse');
 
     if (type === 'success') {
       box.classList.add('ring-4', 'ring-emerald-400', 'border-emerald-500');
+    } else if (type === 'blocked') {
+      box.classList.add('ring-8', 'ring-rose-600', 'border-rose-600', 'animate-pulse');
     } else if (type === 'error') {
       box.classList.add('ring-4', 'ring-rose-500', 'border-rose-500');
     } else if (type === 'duplicate') {
@@ -156,7 +158,7 @@ const CameraScanner = (function () {
     }
 
     setTimeout(() => {
-      box.classList.remove('ring-4', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'border-rose-500', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500');
+      box.classList.remove('ring-4', 'ring-8', 'ring-emerald-400', 'border-emerald-500', 'ring-rose-500', 'ring-rose-600', 'border-rose-500', 'border-rose-600', 'ring-amber-400', 'border-amber-500', 'ring-sky-400', 'border-sky-500', 'animate-pulse');
     }, 1200);
   }
 
