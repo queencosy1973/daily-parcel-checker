@@ -109,18 +109,14 @@
       onRemoteScan: (remoteScan) => {
         handleRemoteScan(remoteScan);
       },
+      onRemoteScans: (remoteScans) => {
+        handleRemoteScansBatch(remoteScans);
+      },
       onRemoteOrders: (remoteOrders) => {
-        state.orders = remoteOrders;
-        const count = reconcileScansAndOrders();
-        renderAll();
-        if (count > 0) {
-          const toast = $('desktop-remote-toast');
-          if (toast) {
-            toast.innerText = `✨ ได้รับคำสั่งซื้อใหม่และจับคู่ย้อนหลังสำเร็จ ${count} รายการ`;
-            toast.classList.remove('hidden');
-            setTimeout(() => toast.classList.add('hidden'), 4000);
-          }
-        }
+        handleRemoteOrdersBatch(remoteOrders);
+      },
+      onSyncStatus: (status) => {
+        updateCloudSyncStatusUi(status);
       }
     });
 
@@ -140,6 +136,7 @@
     setupFilters();
     setupReMatchButton();
     setupOrderActionModal();
+    setupCloudSyncControls();
 
     // 4. Check if Mobile View requested via URL hash
     if (window.location.hash === '#scanner' || window.innerWidth < 768) {
@@ -149,6 +146,12 @@
     // 5. Initial Render
     renderAll();
     lucide.createIcons();
+
+    // 6. Initial Cloud Sync & Automatic Periodic Cloud Polling (Every 25s)
+    syncWithCloud(false);
+    setInterval(() => {
+      syncWithCloud(false);
+    }, 25000);
   }
 
   // =========================================================================
@@ -211,6 +214,7 @@
       dateInput.addEventListener('change', (e) => {
         state.activeDate = e.target.value || getTodayString();
         renderAll();
+        syncWithCloud(false);
       });
     }
 
@@ -225,6 +229,7 @@
         state.activeDate = formatDate(d);
         if (dateInput) dateInput.value = state.activeDate;
         renderAll();
+        syncWithCloud(false);
       });
     }
 
@@ -235,6 +240,7 @@
         state.activeDate = formatDate(d);
         if (dateInput) dateInput.value = state.activeDate;
         renderAll();
+        syncWithCloud(false);
       });
     }
 
@@ -243,6 +249,7 @@
         state.activeDate = getTodayString();
         if (dateInput) dateInput.value = state.activeDate;
         renderAll();
+        syncWithCloud(false);
       });
     }
   }
@@ -614,6 +621,8 @@
         if (added) successCount++;
       }
       renderAll();
+      triggerCloudPushDebounced(state.activeDate);
+      SyncService.broadcastScans(state.scans);
       const toast = $('desktop-remote-toast');
       if (toast) {
         toast.innerText = `📦 นำเข้าข้อมูลสแกนเป็นชุดสำเร็จ ${successCount} รายการ`;
@@ -698,6 +707,7 @@
     // Save and broadcast to all devices
     SyncService.addLocalScan(newScanRecord);
     state.scans.unshift(newScanRecord);
+    triggerCloudPushDebounced(targetDate);
 
     if (triggerFeedback) {
       // Trigger Audio & Visual HUD Feedback
@@ -906,6 +916,222 @@
       toast.innerText = `📱 มือถือ (${remoteScan.scanner}) สแกน: ${remoteScan.trackingId} [${remoteScan.matchResult}]`;
       toast.classList.remove('hidden');
       setTimeout(() => toast.classList.add('hidden'), 3500);
+    }
+  }
+
+  // =========================================================================
+  // SUPABASE CLOUD PERSISTENCE & CROSS-DEVICE DATA SYNCHRONIZATION
+  // =========================================================================
+  function handleRemoteScansBatch(remoteScans) {
+    if (!Array.isArray(remoteScans) || remoteScans.length === 0) return;
+    let added = 0;
+    const existingIds = new Set(state.scans.map((s) => s.id));
+    const existingCleanDate = new Set(state.scans.map((s) => `${s.scanDate}|${s.cleanTracking}`));
+
+    remoteScans.forEach((rs) => {
+      const clean = rs.cleanTracking || normalizeTracking(rs.trackingId);
+      const cleanKey = `${rs.scanDate || state.activeDate}|${clean}`;
+      if (!existingIds.has(rs.id) && !existingCleanDate.has(cleanKey)) {
+        existingIds.add(rs.id);
+        existingCleanDate.add(cleanKey);
+
+        const resolution = resolveScanMatch(rs);
+        if (resolution.order) {
+          rs.matchedOrderId = resolution.order.orderId;
+          rs.matchedSku = resolution.order.sku;
+          rs.matchedQty = resolution.order.qty;
+          rs.matchedCarrier = resolution.order.carrier;
+          rs.matchResult = resolution.result;
+        } else if (!rs.matchResult) {
+          rs.matchResult = resolution.result;
+        }
+
+        state.scans.unshift(rs);
+        added++;
+      }
+    });
+
+    if (added > 0) {
+      SyncService.saveLocalScans(state.scans);
+      reconcileScansAndOrders();
+      renderAll();
+      const toast = $('desktop-remote-toast');
+      if (toast) {
+        toast.innerText = `☁️ ซิงค์ข้อมูลสแกนจากเครื่องอื่นเพิ่ม ${added} รายการ`;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 3500);
+      }
+    }
+  }
+
+  function handleRemoteOrdersBatch(remoteOrders) {
+    if (!Array.isArray(remoteOrders) || remoteOrders.length === 0) return;
+    const existingOrderKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
+    let addedCount = 0;
+
+    remoteOrders.forEach((ro) => {
+      const key = `${ro.shipDate}|${ro.orderId}|${ro.cleanTracking}|${ro.sku}`;
+      if (!existingOrderKeys.has(key)) {
+        existingOrderKeys.add(key);
+        state.orders.push(ro);
+        addedCount++;
+      }
+    });
+
+    if (addedCount > 0) {
+      SyncService.saveLocalOrders(state.orders);
+    }
+    const count = reconcileScansAndOrders();
+    renderAll();
+    if (addedCount > 0 || count > 0) {
+      const toast = $('desktop-remote-toast');
+      if (toast) {
+        toast.innerText = `✨ ได้รับคำสั่งซื้อใหม่ ${addedCount} รายการ และจับคู่สำเร็จ ${count} รายการ`;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 4000);
+      }
+    }
+  }
+
+  let cloudPushDebounceTimer = null;
+  function triggerCloudPushDebounced(date) {
+    if (cloudPushDebounceTimer) clearTimeout(cloudPushDebounceTimer);
+    cloudPushDebounceTimer = setTimeout(async () => {
+      const targetDate = date || state.activeDate;
+      const ok = await SyncService.pushCloudData(targetDate, state.orders, state.scans, state.scannerName);
+      if (ok) {
+        updateCloudSyncStatusUi('synced');
+      }
+    }, 1200);
+  }
+
+  let isSyncingCloud = false;
+  async function syncWithCloud(isManual = false) {
+    if (isSyncingCloud) return;
+    isSyncingCloud = true;
+    updateCloudSyncStatusUi('syncing');
+
+    try {
+      const targetDate = state.activeDate;
+      const cloudData = await SyncService.fetchCloudData(targetDate);
+
+      let scansAdded = 0;
+      let ordersAdded = 0;
+
+      if (cloudData) {
+        // 1. Merge Scans from Cloud
+        if (Array.isArray(cloudData.scans) && cloudData.scans.length > 0) {
+          const localScanIds = new Set(state.scans.map((s) => s.id));
+          const localCleanDateMap = new Set(state.scans.map((s) => `${s.scanDate}|${s.cleanTracking}`));
+
+          cloudData.scans.forEach((cs) => {
+            const clean = cs.cleanTracking || normalizeTracking(cs.trackingId);
+            const cleanKey = `${cs.scanDate || targetDate}|${clean}`;
+            if (!localScanIds.has(cs.id) && !localCleanDateMap.has(cleanKey)) {
+              localScanIds.add(cs.id);
+              localCleanDateMap.add(cleanKey);
+
+              const resolution = resolveScanMatch(cs);
+              if (resolution.order) {
+                cs.matchedOrderId = resolution.order.orderId;
+                cs.matchedSku = resolution.order.sku;
+                cs.matchedQty = resolution.order.qty;
+                cs.matchedCarrier = resolution.order.carrier;
+                cs.matchResult = resolution.result;
+              } else if (!cs.matchResult) {
+                cs.matchResult = resolution.result;
+              }
+
+              state.scans.unshift(cs);
+              scansAdded++;
+            }
+          });
+        }
+
+        // 2. Merge Orders from Cloud
+        if (Array.isArray(cloudData.orders) && cloudData.orders.length > 0) {
+          const localOrderKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
+          cloudData.orders.forEach((co) => {
+            const key = `${co.shipDate || targetDate}|${co.orderId}|${co.cleanTracking}|${co.sku}`;
+            if (!localOrderKeys.has(key)) {
+              localOrderKeys.add(key);
+              state.orders.push(co);
+              ordersAdded++;
+            }
+          });
+        }
+      }
+
+      // 3. Handle device with local data newer/larger than cloud (e.g., Admin PC who scanned locally)
+      const currentScansForDate = state.scans.filter((s) => s.scanDate === targetDate);
+      const currentOrdersForDate = state.orders.filter((o) => o.shipDate === targetDate);
+      const cloudScanCount = cloudData && Array.isArray(cloudData.scans) ? cloudData.scans.length : 0;
+      const cloudOrderCount = cloudData && Array.isArray(cloudData.orders) ? cloudData.orders.length : 0;
+
+      if (currentScansForDate.length > cloudScanCount || currentOrdersForDate.length > cloudOrderCount || !cloudData) {
+        if (currentScansForDate.length > 0 || currentOrdersForDate.length > 0) {
+          await SyncService.pushCloudData(targetDate, state.orders, state.scans, state.scannerName);
+          SyncService.broadcastScans(state.scans);
+          SyncService.broadcastOrders(state.orders);
+        }
+      }
+
+      if (scansAdded > 0 || ordersAdded > 0) {
+        SyncService.saveLocalScans(state.scans);
+        SyncService.saveLocalOrders(state.orders);
+        reconcileScansAndOrders();
+        renderAll();
+      }
+
+      updateCloudSyncStatusUi('synced');
+
+      if (isManual) {
+        const toast = $('desktop-remote-toast');
+        const count = state.scans.filter((s) => s.scanDate === targetDate).length;
+        const ordCount = state.orders.filter((o) => o.shipDate === targetDate).length;
+        if (toast) {
+          toast.innerText = `☁️ ซิงค์คลาวด์สำเร็จ! ยอดวันที่ ${targetDate}: สแกน ${count} ชิ้น, คำสั่งซื้อ ${ordCount} รายการ`;
+          toast.classList.remove('hidden');
+          setTimeout(() => toast.classList.add('hidden'), 4000);
+        }
+      }
+    } catch (err) {
+      console.error('syncWithCloud error:', err);
+      updateCloudSyncStatusUi('offline');
+    } finally {
+      isSyncingCloud = false;
+    }
+  }
+
+  function updateCloudSyncStatusUi(status) {
+    const badge = $('cloud-sync-badge');
+    if (!badge) return;
+
+    if (status === 'syncing') {
+      badge.className = 'px-2 py-0.5 text-[10px] font-bold rounded-full bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1 shadow-2xs';
+      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-sky-500 animate-spin"></span><span id="cloud-sync-text">กำลังซิงค์...</span>`;
+    } else if (status === 'synced' || status === 'online') {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      badge.className = 'px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1 shadow-2xs';
+      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span id="cloud-sync-text">คลาวด์ซิงค์ ${timeStr}</span>`;
+    } else if (status === 'connecting') {
+      badge.className = 'px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1 shadow-2xs';
+      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span id="cloud-sync-text">กำลังเชื่อมต่อ</span>`;
+    } else if (status === 'offline') {
+      badge.className = 'px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1 shadow-2xs';
+      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span><span id="cloud-sync-text">ออฟไลน์ (ในเครื่อง)</span>`;
+    }
+  }
+
+  function setupCloudSyncControls() {
+    const btnSync = $('btn-sync-cloud');
+    if (btnSync) {
+      btnSync.addEventListener('click', async () => {
+        btnSync.classList.add('opacity-75', 'cursor-wait');
+        await syncWithCloud(true);
+        btnSync.classList.remove('opacity-75', 'cursor-wait');
+      });
     }
   }
 
@@ -1459,6 +1685,7 @@
         state.orders = state.orders.concat(filteredNewOrders);
         const reMatched = reconcileScansAndOrders();
         SyncService.saveLocalOrders(state.orders);
+        triggerCloudPushDebounced(state.activeDate);
 
         textarea.value = '';
         if (modal) modal.classList.add('hidden');
@@ -1523,6 +1750,7 @@
               state.orders = state.orders.concat(filteredNewOrders);
               const reMatched = reconcileScansAndOrders();
               SyncService.saveLocalOrders(state.orders);
+              triggerCloudPushDebounced(state.activeDate);
               fileInput.value = ''; // Reset input to allow re-upload
 
               renderAll();

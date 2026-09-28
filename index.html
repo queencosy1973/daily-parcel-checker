@@ -58,9 +58,13 @@
         <div>
           <div class="flex items-center gap-2">
             <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v3.1 Scan-Lock & Batch-Split</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v3.2 Cloud-Sync</span>
+            <span id="cloud-sync-badge" class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1 shadow-2xs">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span id="cloud-sync-text">Cloud Sync Online</span>
+            </span>
           </div>
-          <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ป้องกันของตกหล่น และตรวจจับบาร์โค้ดสแกนซ้ำแบบเรียลไทม์</p>
+          <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ซิงค์คลาวด์อัตโนมัติทุกเครื่อง และบล็อกบาร์โค้ดสแกนซ้ำเรียลไทม์</p>
         </div>
       </div>
 
@@ -83,6 +87,10 @@
 
       <!-- Action Buttons -->
       <div class="flex items-center gap-1.5 flex-wrap">
+        <button id="btn-sync-cloud" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-sky-50 border border-sky-200 text-sky-700 hover:bg-sky-100 transition shadow-2xs" title="ดึงข้อมูลสแกนและคำสั่งซื้อล่าสุดจากคลาวด์และเครื่องแอดมิน">
+          <i data-lucide="cloud-download" class="w-3.5 h-3.5 text-sky-600"></i>
+          <span class="hidden sm:inline">ซิงค์</span>คลาวด์
+        </button>
         <button id="btn-open-mobile-qr" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition shadow-2xs">
           <i data-lucide="qr-code" class="w-3.5 h-3.5"></i>
           <span class="hidden sm:inline">เชื่อมต่อ</span>มือถือ
@@ -666,9 +674,9 @@
   </div>
 
   <!-- Core Scripts -->
-  <script src="audio-feedback.js?v=3.1"></script>
-  <script src="camera-scanner.js?v=3.1"></script>
-  <script src="sync-service.js?v=3.1"></script>
-  <script src="app.js?v=3.1"></script>
+  <script src="audio-feedback.js?v=3.2"></script>
+  <script src="camera-scanner.js?v=3.2"></script>
+  <script src="sync-service.js?v=3.2"></script>
+  <script src="app.js?v=3.2"></script>
 </body>
 </html>

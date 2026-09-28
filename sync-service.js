@@ -1,7 +1,10 @@
 /**
- * QueenCosy Daily Parcel Checker - Real-Time Multi-Device Sync Service
- * Seamlessly connects Mobile Phone Scanners with Desktop / Tablet Dashboards.
- * Combines Supabase Realtime Broadcast, BroadcastChannel, and LocalStorage.
+ * QueenCosy Daily Parcel Checker - Real-Time Multi-Device Sync & Cloud Persistence Service
+ * Seamlessly connects Mobile Phone Scanners, Desktop Dashboards, and Management Views.
+ * Features:
+ * 1. Supabase Cloud Database Persistence (PostgREST REST API) - works across all devices, even when offline/asynchronous.
+ * 2. Supabase Realtime WebSocket Broadcast - instant peer-to-peer live scan updates (< 0.1s).
+ * 3. Browser Tab-to-Tab BroadcastChannel & LocalStorage fallback.
  */
 const SyncService = (function () {
   'use strict';
@@ -17,7 +20,9 @@ const SyncService = (function () {
   let realtimeChannel = null;
   let localBc = null;
   let onRemoteScanCallback = null;
+  let onRemoteScansCallback = null;
   let onRemoteOrdersCallback = null;
+  let onSyncStatusCallback = null;
 
   function getConfig() {
     try {
@@ -38,7 +43,9 @@ const SyncService = (function () {
 
   function init(callbacks = {}) {
     onRemoteScanCallback = callbacks.onRemoteScan || null;
+    onRemoteScansCallback = callbacks.onRemoteScans || null;
     onRemoteOrdersCallback = callbacks.onRemoteOrders || null;
+    onSyncStatusCallback = callbacks.onSyncStatus || null;
 
     // 1. Browser Tab-to-Tab BroadcastChannel
     if (typeof window.BroadcastChannel !== 'undefined') {
@@ -68,26 +75,35 @@ const SyncService = (function () {
           .on('broadcast', { event: 'orders_update' }, (payload) => {
             handleIncomingMessage({ type: 'orders_update', data: payload.payload });
           })
+          .on('broadcast', { event: 'scans_update' }, (payload) => {
+            handleIncomingMessage({ type: 'scans_update', data: payload.payload });
+          })
           .on('broadcast', { event: 'request_state' }, () => {
-            // If we have orders, send current state to the requesting client
+            // When a peer asks for state, share both local orders AND scans
             const orders = getLocalOrders();
             if (orders && orders.length > 0) {
               broadcastOrders(orders);
             }
+            const scans = getLocalScans();
+            if (scans && scans.length > 0) {
+              broadcastScans(scans);
+            }
           })
           .subscribe((status) => {
             console.log('Supabase Realtime Channel Status:', status);
+            if (typeof onSyncStatusCallback === 'function') {
+              onSyncStatusCallback(status === 'SUBSCRIBED' ? 'online' : 'connecting');
+            }
             if (status === 'SUBSCRIBED') {
-              // Request latest state from any peer
-              realtimeChannel.send({
-                type: 'broadcast',
-                event: 'request_state',
-                payload: { requester: cfg.deviceId }
-              });
+              // Request latest state from any active peer
+              requestPeerState();
             }
           });
       } catch (err) {
         console.warn('Supabase Realtime setup failed, running offline/local mode:', err);
+        if (typeof onSyncStatusCallback === 'function') {
+          onSyncStatusCallback('offline');
+        }
       }
     }
   }
@@ -99,21 +115,31 @@ const SyncService = (function () {
       if (typeof onRemoteScanCallback === 'function') {
         onRemoteScanCallback(msg.data);
       }
+    } else if (msg.type === 'scans_update' && msg.data) {
+      if (typeof onRemoteScansCallback === 'function') {
+        onRemoteScansCallback(msg.data);
+      }
     } else if (msg.type === 'orders_update' && msg.data) {
       if (typeof onRemoteOrdersCallback === 'function') {
         onRemoteOrdersCallback(msg.data);
       }
+    } else if (msg.type === 'request_state') {
+      const orders = getLocalOrders();
+      if (orders && orders.length > 0) {
+        broadcastOrders(orders);
+      }
+      const scans = getLocalScans();
+      if (scans && scans.length > 0) {
+        broadcastScans(scans);
+      }
     }
   }
 
-  // Broadcast a new scan event to all connected devices (Mobile -> Desktop & Vice versa)
+  // Broadcast a single scan event to all connected devices in real time
   function broadcastScan(scanItem) {
-    // 1. Broadcast locally
     if (localBc) {
       localBc.postMessage({ type: 'scan_action', data: scanItem });
     }
-
-    // 2. Broadcast via Supabase Cloud Realtime
     if (realtimeChannel) {
       realtimeChannel.send({
         type: 'broadcast',
@@ -123,7 +149,21 @@ const SyncService = (function () {
     }
   }
 
-  // Broadcast orders update
+  // Broadcast full scans array to peers
+  function broadcastScans(scans) {
+    if (localBc) {
+      localBc.postMessage({ type: 'scans_update', data: scans });
+    }
+    if (realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'scans_update',
+        payload: scans
+      });
+    }
+  }
+
+  // Broadcast orders array to peers
   function broadcastOrders(orders) {
     if (localBc) {
       localBc.postMessage({ type: 'orders_update', data: orders });
@@ -137,7 +177,102 @@ const SyncService = (function () {
     }
   }
 
-  // Local Storage Management
+  // Request latest state from any connected peer
+  function requestPeerState() {
+    const cfg = getConfig();
+    if (localBc) {
+      localBc.postMessage({ type: 'request_state', requester: cfg.deviceId });
+    }
+    if (realtimeChannel) {
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'request_state',
+        payload: { requester: cfg.deviceId }
+      });
+    }
+  }
+
+  // =========================================================================
+  // SUPABASE CLOUD PERSISTENCE (REST API POSTGREST)
+  // Ensures data is never lost even if devices close or sleep
+  // =========================================================================
+
+  async function fetchCloudData(date) {
+    const cfg = getConfig();
+    if (!cfg.supabaseUrl || !cfg.supabaseKey) return null;
+    try {
+      const batchId = 'QC_PARCEL_DATA_' + date;
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/production_batches?batch_id=eq.${encodeURIComponent(batchId)}`, {
+        headers: {
+          'apikey': cfg.supabaseKey,
+          'Authorization': `Bearer ${cfg.supabaseKey}`
+        }
+      });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      if (!rows || rows.length === 0) return null;
+      const parsed = JSON.parse(rows[0].items_json || '{}');
+      return {
+        date: parsed.date || date,
+        orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+        scans: Array.isArray(parsed.scans) ? parsed.scans : [],
+        updatedAt: parsed.updatedAt || rows[0].updated_at,
+        updatedBy: parsed.updatedBy || rows[0].imported_by
+      };
+    } catch (e) {
+      console.warn('fetchCloudData error:', e);
+      return null;
+    }
+  }
+
+  async function pushCloudData(date, orders, scans, scannerName = 'พนักงาน') {
+    const cfg = getConfig();
+    if (!cfg.supabaseUrl || !cfg.supabaseKey) return false;
+    try {
+      const batchId = 'QC_PARCEL_DATA_' + date;
+      // Filter for this date if present, or save state
+      const dateOrders = (orders || []).filter(o => o.shipDate === date);
+      const targetOrders = dateOrders.length > 0 ? dateOrders : (orders || []);
+      const dateScans = (scans || []).filter(s => s.scanDate === date);
+      const targetScans = dateScans.length > 0 ? dateScans : (scans || []);
+
+      const payload = {
+        batch_id: batchId,
+        batch_name: 'Parcel Data ' + date,
+        source: 'DAILY_PARCEL_CHECKER',
+        status: 'COMPLETED',
+        total_skus: targetOrders.length,
+        total_units: targetScans.length,
+        total_material_cost: 0,
+        items_json: JSON.stringify({
+          date: date,
+          orders: targetOrders,
+          scans: targetScans,
+          updatedAt: new Date().toISOString(),
+          updatedBy: scannerName
+        })
+      };
+
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/production_batches`, {
+        method: 'POST',
+        headers: {
+          'apikey': cfg.supabaseKey,
+          'Authorization': `Bearer ${cfg.supabaseKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify(payload)
+      });
+      return res.ok || res.status === 201;
+    } catch (e) {
+      console.warn('pushCloudData error:', e);
+      return false;
+    }
+  }
+
+  // =========================================================================
+  // LOCAL STORAGE MANAGEMENT
+  // =========================================================================
   function getLocalOrders() {
     try {
       const s = localStorage.getItem(STORAGE_ORDERS_KEY);
@@ -176,11 +311,17 @@ const SyncService = (function () {
     localStorage.removeItem(STORAGE_SCANS_KEY);
     if (localBc) {
       localBc.postMessage({ type: 'orders_update', data: [] });
+      localBc.postMessage({ type: 'scans_update', data: [] });
     }
     if (realtimeChannel) {
       realtimeChannel.send({
         type: 'broadcast',
         event: 'orders_update',
+        payload: []
+      });
+      realtimeChannel.send({
+        type: 'broadcast',
+        event: 'scans_update',
         payload: []
       });
     }
@@ -197,6 +338,10 @@ const SyncService = (function () {
     addLocalScan,
     clearAllData,
     broadcastScan,
-    broadcastOrders
+    broadcastScans,
+    broadcastOrders,
+    requestPeerState,
+    fetchCloudData,
+    pushCloudData
   };
 })();
