@@ -1319,7 +1319,8 @@
       return;
     }
 
-    const itemsHtml = problemOrders.map((o) => {
+    const displayOrders = problemOrders.slice(0, 5);
+    const itemsHtml = displayOrders.map((o) => {
       const isCanc = o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel')));
       const statusText = isCanc ? 'ลูกค้ายกเลิก' : 'ยังไม่มีเลข Tracking';
       const badgeClass = isCanc ? 'bg-rose-100 text-rose-800 border-rose-300' : 'bg-amber-100 text-amber-900 border-amber-300';
@@ -1331,16 +1332,25 @@
             <span class="text-xs text-slate-600 truncate max-w-[200px] sm:max-w-[320px]">${escapeHtml(o.sku)} (${o.qty || 1} ชิ้น)</span>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button class="btn-quick-manage px-2.5 py-1 text-xs font-semibold rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition" data-id="${o.id}">
+            <button class="btn-quick-manage px-2.5 py-1 text-xs font-semibold rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition cursor-pointer" data-id="${o.id}">
               ตรวจสอบ / จัดการ
             </button>
-            <button class="btn-quick-delete p-1 text-slate-400 hover:text-rose-600 rounded transition" data-id="${o.id}" title="ลบรายการนี้">
+            <button class="btn-quick-delete p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer" data-id="${o.id}" title="ลบรายการนี้">
               <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>
         </div>
       `;
     }).join('');
+
+    const moreHtml = problemOrders.length > 5 ? `
+      <div class="pt-1.5 flex items-center justify-between text-xs text-amber-900 bg-amber-100/70 px-3 py-2 rounded-lg border border-amber-300">
+        <span>และมีอีก <b>${problemOrders.length - 5}</b> คำสั่งซื้อที่ยังไม่มีเลข Tracking หรือลูกค้ายกเลิก</span>
+        <button class="btn-jump-untracked font-bold text-amber-900 hover:text-amber-950 underline cursor-pointer">
+          คลิกเพื่อกรองดูทั้งหมด ${problemOrders.length} รายการในตาราง →
+        </button>
+      </div>
+    ` : '';
 
     const bannerHtml = `
       <div class="p-4 bg-amber-50 border-2 border-amber-400 rounded-2xl shadow-xs space-y-2.5">
@@ -1360,6 +1370,7 @@
         <div class="space-y-1.5 pt-1">
           ${itemsHtml}
         </div>
+        ${moreHtml}
       </div>
     `;
 
