@@ -57,32 +57,64 @@
         </div>
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออกต่อวัน</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">v3.2 Cloud-Sync</span>
+            <h1 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-tight">ระบบตรวจเช็คพัสดุส่งออก</h1>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">v3.3 Monthly-Audit</span>
             <span id="cloud-sync-badge" class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1 shadow-2xs">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               <span id="cloud-sync-text">Cloud Sync Online</span>
             </span>
           </div>
-          <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ ซิงค์คลาวด์อัตโนมัติทุกเครื่อง และบล็อกบาร์โค้ดสแกนซ้ำเรียลไทม์</p>
+          <p class="text-[11px] text-slate-500 hidden sm:block">ตรวจสอบพัสดุขึ้นรถ สรุปยอดรายวัน/รายเดือน ซิงค์คลาวด์อัตโนมัติ และตรวจเช็คออเดอร์ค้างส่ง</p>
         </div>
       </div>
 
-      <!-- Date Selector -->
-      <div class="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 shadow-2xs">
-        <button id="btn-prev-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันก่อนหน้า">
-          <i data-lucide="chevron-left" class="w-4 h-4"></i>
-        </button>
-        <div class="flex items-center px-2 gap-1.5">
-          <i data-lucide="calendar" class="w-4 h-4 text-emerald-600"></i>
-          <input type="date" id="selected-date" class="bg-transparent border-none text-xs sm:text-sm font-bold text-slate-800 focus:outline-none cursor-pointer">
+      <!-- View Mode & Date/Month Controls -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <!-- View Mode Switcher -->
+        <div class="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-xs font-bold shadow-2xs">
+          <button id="btn-mode-day" class="px-2.5 py-1 rounded-lg bg-white text-emerald-800 shadow-2xs transition flex items-center gap-1.5 cursor-pointer" title="โหมดตรวจเช็คประจำวัน">
+            <i data-lucide="calendar" class="w-3.5 h-3.5 text-emerald-600"></i>
+            <span>รายวัน</span>
+          </button>
+          <button id="btn-mode-month" class="px-2.5 py-1 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5 cursor-pointer" title="โหมดสรุปภาพรวมและตรวจสอบประจำเดือน">
+            <i data-lucide="calendar-range" class="w-3.5 h-3.5 text-indigo-600"></i>
+            <span>รายเดือน</span>
+          </button>
         </div>
-        <button id="btn-next-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันถัดไป">
-          <i data-lucide="chevron-right" class="w-4 h-4"></i>
-        </button>
-        <button id="btn-today-date" class="px-2 py-1 text-[11px] font-semibold bg-white rounded-lg text-emerald-700 border border-slate-200 ml-1 hover:bg-emerald-50 transition">
-          วันนี้
-        </button>
+
+        <!-- Daily Date Selector -->
+        <div id="container-date-daily" class="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 shadow-2xs">
+          <button id="btn-prev-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันก่อนหน้า">
+            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+          </button>
+          <div class="flex items-center px-2 gap-1.5">
+            <i data-lucide="calendar" class="w-4 h-4 text-emerald-600"></i>
+            <input type="date" id="selected-date" class="bg-transparent border-none text-xs sm:text-sm font-bold text-slate-800 focus:outline-none cursor-pointer">
+          </div>
+          <button id="btn-next-date" class="p-1.5 hover:bg-white rounded-lg text-slate-600 transition" title="วันถัดไป">
+            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+          </button>
+          <button id="btn-today-date" class="px-2 py-1 text-[11px] font-semibold bg-white rounded-lg text-emerald-700 border border-slate-200 ml-1 hover:bg-emerald-50 transition">
+            วันนี้
+          </button>
+        </div>
+
+        <!-- Monthly Date Selector (hidden by default) -->
+        <div id="container-date-monthly" class="hidden flex items-center bg-indigo-50/90 rounded-xl p-1 border border-indigo-200 shadow-2xs">
+          <button id="btn-prev-month" class="p-1.5 hover:bg-white rounded-lg text-indigo-700 transition" title="เดือนก่อนหน้า">
+            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+          </button>
+          <div class="flex items-center px-2 gap-1.5">
+            <i data-lucide="calendar-range" class="w-4 h-4 text-indigo-600"></i>
+            <input type="month" id="selected-month" class="bg-transparent border-none text-xs sm:text-sm font-bold text-indigo-950 focus:outline-none cursor-pointer">
+          </div>
+          <button id="btn-next-month" class="p-1.5 hover:bg-white rounded-lg text-indigo-700 transition" title="เดือนถัดไป">
+            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+          </button>
+          <button id="btn-this-month" class="px-2 py-1 text-[11px] font-semibold bg-white rounded-lg text-indigo-700 border border-indigo-200 ml-1 hover:bg-indigo-100 transition">
+            เดือนนี้
+          </button>
+        </div>
       </div>
 
       <!-- Action Buttons -->
@@ -148,8 +180,10 @@
     <!-- ========================================================================= -->
     <section id="tab-summary" class="space-y-6">
       
-      <!-- Cancelled & Untracked Orders Alert Banner -->
-      <div id="dashboard-untracked-alert" class="hidden"></div>
+      <!-- DAILY SUMMARY DASHBOARD VIEW -->
+      <div id="summary-daily-view" class="space-y-6">
+        <!-- Cancelled & Untracked Orders Alert Banner -->
+        <div id="dashboard-untracked-alert" class="hidden"></div>
 
       <!-- Progress Bar & Milestone Card -->
       <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs">
@@ -293,6 +327,145 @@
         </div>
       </div>
 
+      <!-- MONTHLY SUMMARY DASHBOARD VIEW -->
+      <div id="summary-monthly-view" class="hidden space-y-6">
+        
+        <!-- Monthly Header Banner -->
+        <div class="bg-gradient-to-r from-indigo-900 via-slate-900 to-emerald-950 rounded-2xl p-5 text-white shadow-md relative overflow-hidden">
+          <div class="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/30 text-indigo-200 border border-indigo-400/30">ภาพรวมประจำเดือน</span>
+                <span id="monthly-badge-label" class="text-xs text-emerald-300 font-mono font-semibold">2026-09</span>
+              </div>
+              <h2 class="text-lg sm:text-xl font-black tracking-tight mt-1 text-white">รายงานสรุปการตรวจเช็คพัสดุประจำเดือน</h2>
+              <p class="text-xs text-slate-300 mt-0.5">ตรวจสอบยอดคำสั่งซื้อสะสม, การสแกนขึ้นรถแยกรายวัน, และรายการค้างส่งข้ามวัน</p>
+            </div>
+            <div class="flex items-center gap-4 bg-white/10 backdrop-blur-md px-4 py-2.5 rounded-xl border border-white/10">
+              <div class="text-right">
+                <div class="text-[11px] text-slate-300">อัตราจัดส่งสำเร็จทั้งเดือน</div>
+                <div id="monthly-kpi-rate" class="text-2xl sm:text-3xl font-black font-mono text-emerald-400">0.0%</div>
+              </div>
+              <div class="w-12 h-12 rounded-full border-4 border-emerald-400/40 flex items-center justify-center font-bold text-xs text-emerald-300">
+                <i data-lucide="check-circle-2" class="w-6 h-6 text-emerald-400"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 Monthly Master KPI Cards -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <!-- 1. คำสั่งซื้อทั้งหมดในเดือน -->
+          <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+            <div class="flex items-center justify-between text-slate-500 mb-1">
+              <span class="text-xs font-medium">1. คำสั่งซื้อทั้งหมดในเดือน</span>
+              <i data-lucide="packages" class="w-4 h-4 text-indigo-500"></i>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <div id="monthly-kpi-orders" class="text-2xl sm:text-3xl font-bold font-mono text-indigo-700">0</div>
+              <span class="text-xs text-slate-500 font-medium">ออเดอร์</span>
+            </div>
+            <div id="monthly-kpi-orders-sub" class="text-[11px] text-slate-400 mt-1">คำสั่งซื้อสะสมทั้งหมดในเดือน</div>
+          </div>
+
+          <!-- 2. สแกนขึ้นรถแล้ว -->
+          <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+            <div class="flex items-center justify-between text-slate-500 mb-1">
+              <span class="text-xs font-medium">2. สแกนขึ้นรถแล้ว</span>
+              <i data-lucide="truck" class="w-4 h-4 text-emerald-500"></i>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <div id="monthly-kpi-scanned" class="text-2xl sm:text-3xl font-bold font-mono text-emerald-600">0</div>
+              <span class="text-xs text-slate-500 font-medium">กล่อง</span>
+            </div>
+            <div id="monthly-kpi-scanned-sub" class="text-[11px] text-slate-400 mt-1">ส่งมอบขนส่งเรียบร้อยแล้ว</div>
+          </div>
+
+          <!-- 3. ค้างส่ง / อยู่ระหว่างผลิต -->
+          <div class="bg-white rounded-xl p-4 border border-amber-200 bg-amber-50/30 shadow-2xs">
+            <div class="flex items-center justify-between text-amber-800 mb-1">
+              <span class="text-xs font-bold">3. ค้างส่ง / รอผลิต (Backlog)</span>
+              <i data-lucide="clock-alert" class="w-4 h-4 text-amber-600"></i>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <div id="monthly-kpi-pending" class="text-2xl sm:text-3xl font-bold font-mono text-amber-700">0</div>
+              <span class="text-xs text-amber-700 font-medium">กล่อง</span>
+            </div>
+            <div id="monthly-kpi-pending-sub" class="text-[11px] text-amber-700 mt-1">ยังไม่สแกน / กำลังรอผลิต</div>
+          </div>
+
+          <!-- 4. สแกนรวมทั้งหมด -->
+          <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs">
+            <div class="flex items-center justify-between text-slate-500 mb-1">
+              <span class="text-xs font-medium">4. สแกนรวมทั้งหมด (ครั้ง)</span>
+              <i data-lucide="barcode" class="w-4 h-4 text-sky-500"></i>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <div id="monthly-kpi-total-scans" class="text-2xl sm:text-3xl font-bold font-mono text-sky-700">0</div>
+              <span class="text-xs text-slate-500 font-medium">ครั้ง</span>
+            </div>
+            <div id="monthly-kpi-total-scans-sub" class="text-[11px] text-slate-400 mt-1">จำนวนครั้งที่ยิงบาร์โค้ดทั้งหมด</div>
+          </div>
+        </div>
+
+        <!-- Monthly Daily Dispatch Breakdown Table (แจกแจงยอดขึ้นรถแต่ละวัน) -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 class="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
+                <i data-lucide="calendar-days" class="w-4 h-4 text-indigo-600"></i>
+                ตารางแจกแจงยอดสแกนขึ้นรถแยกรายวันในเดือนนี้
+              </h3>
+              <p class="text-xs text-slate-500 mt-0.5">แสดงจำนวนกล่องที่ขึ้นรถจริงในแต่ละวัน เพื่อตรวจสอบย้อนหลังและตัดรอบ</p>
+            </div>
+            <div class="text-xs text-slate-600 font-medium">
+              สแกนขึ้นรถแล้วทั้งสิ้น: <span id="monthly-table-total-boxes" class="font-bold text-emerald-600 font-mono">0</span> กล่อง
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase">
+                  <th class="py-3 px-4 w-12 text-center">#</th>
+                  <th class="py-3 px-4 min-w-[120px]">วันที่สแกนขึ้นรถ</th>
+                  <th class="py-3 px-4 text-center min-w-[130px]">จำนวนสแกนขึ้นรถ (กล่อง)</th>
+                  <th class="py-3 px-4 min-w-[200px]">แยกตามขนส่ง (BEST / Flash / SPX)</th>
+                  <th class="py-3 px-4 min-w-[120px]">สถานะ</th>
+                  <th class="py-3 px-4 text-center w-28">ดูข้อมูลวันนั้น</th>
+                </tr>
+              </thead>
+              <tbody id="monthly-daily-breakdown-body" class="divide-y divide-slate-100 font-sans">
+                <!-- Populated via app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Carriers Breakdown & Top Pending SKUs Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs">
+            <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+              <i data-lucide="pie-chart" class="w-4 h-4 text-indigo-500"></i>
+              สัดส่วนคำสั่งซื้อแยกตามบริษัทขนส่งในเดือนนี้
+            </h4>
+            <div id="monthly-carrier-stats" class="space-y-2 text-xs">
+              <!-- Populated via app.js -->
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs">
+            <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+              <i data-lucide="package-search" class="w-4 h-4 text-amber-500"></i>
+              สินค้าที่ค้างส่ง / อยู่ระหว่างผลิต สูงสุด (Top Backlog SKUs)
+            </h4>
+            <div id="monthly-top-backlog-skus" class="space-y-2 text-xs">
+              <!-- Populated via app.js -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+
     </section>
 
     <!-- ========================================================================= -->
@@ -353,6 +526,8 @@
                 <th class="py-3 px-3.5 min-w-[200px]">SKU สินค้า (รวมต่อกล่อง)</th>
                 <th class="py-3 px-3.5 text-center w-16">จำนวน</th>
                 <th class="py-3 px-3.5 min-w-[100px]">ขนส่ง</th>
+                <th id="th-order-date" class="hidden py-3 px-3.5 min-w-[110px] text-indigo-700">วันที่ออเดอร์เข้า</th>
+                <th id="th-scan-date" class="hidden py-3 px-3.5 min-w-[130px] text-emerald-700">วันที่สแกนขึ้นรถ</th>
                 <th class="py-3 px-3.5 min-w-[100px]">ผู้จัดสินค้า</th>
                 <th class="py-3 px-3.5 text-center min-w-[140px]">ผลตรวจพัสดุ</th>
                 <th class="py-3 px-3.5 text-center w-12"></th>

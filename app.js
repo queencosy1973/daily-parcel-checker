@@ -12,9 +12,13 @@
   // Application State
   const state = {
     activeTab: 'tab-summary',
+    viewMode: 'day', // 'day' or 'month'
     activeDate: getTodayString(),
+    activeMonth: getTodayString().substring(0, 7), // 'YYYY-MM'
     orders: [],
     scans: [],
+    monthlyOrders: [], // consolidated deduplicated monthly orders with dispatch info
+    monthlyScans: [],  // all monthly scans
     scannerName: 'เจ้าหน้าที่คลัง',
     currentFilter: 'all', // 'all', 'missing', 'scanned', 'extra', 'issues'
     searchQuery: '',
@@ -28,6 +32,32 @@
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  function getThisMonthString() {
+    return getTodayString().substring(0, 7);
+  }
+
+  function formatThaiMonth(ym) {
+    if (!ym) return '';
+    const parts = ym.split('-');
+    if (parts.length < 2) return ym;
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const thaiMonths = [
+      'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+      'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+    ];
+    return `${thaiMonths[m - 1] || ''} ${y + 543}`;
+  }
+
+  function adjustMonth(currentYm, offset) {
+    if (!currentYm) return getThisMonthString();
+    const [year, month] = currentYm.split('-').map(Number);
+    const d = new Date(year, month - 1 + offset, 1);
+    const ny = d.getFullYear();
+    const nm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${ny}-${nm}`;
   }
 
   function normalizeTracking(str) {
@@ -126,6 +156,7 @@
     // 3. Setup Event Listeners
     setupTabs();
     setupDateControls();
+    setupMonthControls();
     setupBarcodeGunInput();
     setupCameraButtons();
     setupImportModal();
@@ -259,6 +290,131 @@
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  function setupMonthControls() {
+    const monthInput = $('selected-month');
+    if (monthInput) {
+      monthInput.value = state.activeMonth;
+      monthInput.addEventListener('change', (e) => {
+        state.activeMonth = e.target.value || getThisMonthString();
+        loadAndRenderMonthlyData();
+      });
+    }
+
+    const btnPrev = $('btn-prev-month');
+    const btnNext = $('btn-next-month');
+    const btnThisMonth = $('btn-this-month');
+
+    if (btnPrev) {
+      btnPrev.addEventListener('click', () => {
+        state.activeMonth = adjustMonth(state.activeMonth, -1);
+        if (monthInput) monthInput.value = state.activeMonth;
+        loadAndRenderMonthlyData();
+      });
+    }
+
+    if (btnNext) {
+      btnNext.addEventListener('click', () => {
+        state.activeMonth = adjustMonth(state.activeMonth, 1);
+        if (monthInput) monthInput.value = state.activeMonth;
+        loadAndRenderMonthlyData();
+      });
+    }
+
+    if (btnThisMonth) {
+      btnThisMonth.addEventListener('click', () => {
+        state.activeMonth = getThisMonthString();
+        if (monthInput) monthInput.value = state.activeMonth;
+        loadAndRenderMonthlyData();
+      });
+    }
+
+    const btnModeDay = $('btn-mode-day');
+    const btnModeMonth = $('btn-mode-month');
+
+    if (btnModeDay) {
+      btnModeDay.addEventListener('click', () => switchViewMode('day'));
+    }
+    if (btnModeMonth) {
+      btnModeMonth.addEventListener('click', () => switchViewMode('month'));
+    }
+  }
+
+  function switchViewMode(mode) {
+    if (state.viewMode === mode) return;
+    state.viewMode = mode;
+
+    const btnDay = $('btn-mode-day');
+    const btnMonth = $('btn-mode-month');
+    const containerDaily = $('container-date-daily');
+    const containerMonthly = $('container-date-monthly');
+    const summaryDaily = $('summary-daily-view');
+    const summaryMonthly = $('summary-monthly-view');
+    const thOrderDate = $('th-order-date');
+    const thScanDate = $('th-scan-date');
+    const btnExport = $('btn-export-excel');
+
+    if (mode === 'day') {
+      if (btnDay) {
+        btnDay.className = 'px-2.5 py-1 rounded-lg bg-white text-emerald-800 shadow-2xs transition flex items-center gap-1.5 cursor-pointer';
+      }
+      if (btnMonth) {
+        btnMonth.className = 'px-2.5 py-1 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5 cursor-pointer';
+      }
+      if (containerDaily) containerDaily.classList.remove('hidden');
+      if (containerMonthly) containerMonthly.classList.add('hidden');
+      if (summaryDaily) summaryDaily.classList.remove('hidden');
+      if (summaryMonthly) summaryMonthly.classList.add('hidden');
+      if (thOrderDate) thOrderDate.classList.add('hidden');
+      if (thScanDate) thScanDate.classList.add('hidden');
+
+      if (btnExport) {
+        btnExport.innerHTML = '<i data-lucide="download" class="w-3.5 h-3.5"></i> ส่งออก Excel';
+      }
+
+      const tabSummary = document.querySelector('.tab-button[data-tab="tab-summary"]');
+      if (tabSummary) {
+        tabSummary.innerHTML = '<i data-lucide="layout-dashboard" class="w-4 h-4 text-emerald-600"></i> แท็บ 1: สรุปรายวัน (KPIs)';
+      }
+      const tabOrders = document.querySelector('.tab-button[data-tab="tab-orders"]');
+      if (tabOrders) {
+        tabOrders.innerHTML = '<i data-lucide="package" class="w-4 h-4 text-blue-600"></i> แท็บ 2: รายการที่ต้องส่ง (คำสั่งซื้อ)';
+      }
+
+      renderAll();
+    } else {
+      // Month mode
+      if (btnMonth) {
+        btnMonth.className = 'px-2.5 py-1 rounded-lg bg-white text-indigo-800 shadow-2xs transition flex items-center gap-1.5 cursor-pointer';
+      }
+      if (btnDay) {
+        btnDay.className = 'px-2.5 py-1 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center gap-1.5 cursor-pointer';
+      }
+      if (containerDaily) containerDaily.classList.add('hidden');
+      if (containerMonthly) containerMonthly.classList.remove('hidden');
+      if (summaryDaily) summaryDaily.classList.add('hidden');
+      if (summaryMonthly) summaryMonthly.classList.remove('hidden');
+      if (thOrderDate) thOrderDate.classList.remove('hidden');
+      if (thScanDate) thScanDate.classList.remove('hidden');
+
+      if (btnExport) {
+        btnExport.innerHTML = '<i data-lucide="download" class="w-3.5 h-3.5"></i> ส่งออก Excel รายเดือน';
+      }
+
+      const tabSummary = document.querySelector('.tab-button[data-tab="tab-summary"]');
+      if (tabSummary) {
+        tabSummary.innerHTML = '<i data-lucide="layout-dashboard" class="w-4 h-4 text-indigo-600"></i> แท็บ 1: สรุปรายเดือน (Monthly KPIs)';
+      }
+      const tabOrders = document.querySelector('.tab-button[data-tab="tab-orders"]');
+      if (tabOrders) {
+        tabOrders.innerHTML = '<i data-lucide="package" class="w-4 h-4 text-indigo-600"></i> แท็บ 2: ออเดอร์ทั้งเดือน & Backlog';
+      }
+
+      loadAndRenderMonthlyData();
+    }
+
+    lucide.createIcons();
   }
 
   // =========================================================================
@@ -1228,10 +1384,14 @@
   // RENDERING ENGINE
   // =========================================================================
   function renderAll() {
-    renderKPIs();
-    renderOrdersTable();
-    renderScansTable();
-    updateCarrierDropdown();
+    if (state.viewMode === 'month') {
+      loadAndRenderMonthlyData();
+    } else {
+      renderKPIs();
+      renderOrdersTable();
+      renderScansTable();
+      updateCarrierDropdown();
+    }
   }
 
   function renderKPIs() {
@@ -1410,25 +1570,440 @@
     lucide.createIcons();
   }
 
+  // =========================================================================
+  // MONTHLY OVERVIEW & AUDIT RECONCILIATION
+  // =========================================================================
+  let isFetchingMonthlyData = false;
+
+  async function loadAndRenderMonthlyData() {
+    if (isFetchingMonthlyData) return;
+    isFetchingMonthlyData = true;
+
+    const ym = state.activeMonth;
+    const breakdownBody = $('monthly-daily-breakdown-body');
+    if (breakdownBody) {
+      breakdownBody.innerHTML = `
+        <tr>
+          <td colspan="6" class="py-10 text-center text-slate-400">
+            <div class="inline-flex items-center gap-2">
+              <i data-lucide="loader-2" class="w-5 h-5 text-indigo-600 animate-spin"></i>
+              <span>กำลังรวบรวมข้อมูลคำสั่งซื้อและประวัติการสแกนประจำเดือน ${formatThaiMonth(ym)}...</span>
+            </div>
+          </td>
+        </tr>
+      `;
+      lucide.createIcons();
+    }
+
+    try {
+      // 1. Fetch monthly batches from cloud Supabase
+      let cloudBatches = [];
+      try {
+        cloudBatches = await SyncService.fetchMonthlyCloudData(ym);
+      } catch (err) {
+        console.warn('Error fetching monthly cloud data:', err);
+      }
+
+      // 2. Also incorporate local orders and scans for this month
+      const localMonthOrders = state.orders.filter((o) => {
+        const d = o.originalShipDate || o.shipDate;
+        return d && d.startsWith(ym);
+      });
+      const localMonthScans = state.scans.filter((s) => s.scanDate && s.scanDate.startsWith(ym));
+
+      // 3. Consolidate all scans across the month
+      const allScans = [];
+      const scanTrackingMap = new Map(); // cleanTracking -> { firstScanDate, firstScanTime, scanner, count }
+      const dailyScansMap = new Map(); // date -> array of scans
+
+      cloudBatches.forEach((b) => {
+        if (Array.isArray(b.scans)) {
+          b.scans.forEach((s) => {
+            allScans.push(s);
+            const sDate = s.scanDate || b.date;
+            if (!dailyScansMap.has(sDate)) dailyScansMap.set(sDate, []);
+            dailyScansMap.get(sDate).push(s);
+
+            const clean = s.cleanTracking || normalizeTracking(s.trackingId);
+            if (clean) {
+              if (!scanTrackingMap.has(clean)) {
+                scanTrackingMap.set(clean, {
+                  firstScanDate: sDate,
+                  firstScanTime: s.scanTime || '',
+                  scanner: s.scanner || 'เจ้าหน้าที่คลัง',
+                  source: s.source || '',
+                  count: 1
+                });
+              } else {
+                scanTrackingMap.get(clean).count++;
+              }
+            }
+          });
+        }
+      });
+
+      // Add any local scans not in cloud
+      localMonthScans.forEach((s) => {
+        const clean = s.cleanTracking || normalizeTracking(s.trackingId);
+        const sDate = s.scanDate;
+        if (!dailyScansMap.has(sDate)) dailyScansMap.set(sDate, []);
+
+        const exists = allScans.some((x) => x.id === s.id || (x.scanDate === s.scanDate && x.scanTime === s.scanTime && (x.cleanTracking || normalizeTracking(x.trackingId)) === clean));
+        if (!exists) {
+          allScans.push(s);
+          dailyScansMap.get(sDate).push(s);
+        }
+
+        if (clean) {
+          if (!scanTrackingMap.has(clean)) {
+            scanTrackingMap.set(clean, {
+              firstScanDate: sDate,
+              firstScanTime: s.scanTime || '',
+              scanner: s.scanner || 'เจ้าหน้าที่คลัง',
+              source: s.source || '',
+              count: 1
+            });
+          } else {
+            scanTrackingMap.get(clean).count++;
+          }
+        }
+      });
+
+      // 4. Consolidate all orders across the month
+      const orderMap = new Map(); // cleanTracking || orderId -> order
+      const registerOrder = (o, defaultDate) => {
+        const clean = o.cleanTracking || normalizeTracking(o.trackingId);
+        const key = clean || o.orderId || o.id;
+        if (!key) return;
+
+        if (!orderMap.has(key)) {
+          orderMap.set(key, {
+            ...o,
+            orderDate: o.originalShipDate || o.shipDate || defaultDate,
+            cleanTracking: clean
+          });
+        } else {
+          const existing = orderMap.get(key);
+          if (o.originalShipDate && !existing.originalShipDate) {
+            existing.originalShipDate = o.originalShipDate;
+            existing.orderDate = o.originalShipDate;
+          }
+          if (!existing.trackingId && o.trackingId) {
+            existing.trackingId = o.trackingId;
+            existing.cleanTracking = clean;
+          }
+          if (o.carrier && (!existing.carrier || existing.carrier === 'ทั่วไป')) {
+            existing.carrier = o.carrier;
+          }
+        }
+      };
+
+      cloudBatches.forEach((b) => {
+        if (Array.isArray(b.orders)) {
+          b.orders.forEach((o) => registerOrder(o, b.date));
+        }
+      });
+      localMonthOrders.forEach((o) => registerOrder(o, o.shipDate));
+
+      // 5. Cross-match orders with scans
+      const consolidatedOrders = Array.from(orderMap.values());
+      let dispatchedCount = 0;
+      let backlogCount = 0;
+      let cancelledCount = 0;
+      let totalItemsQty = 0;
+
+      consolidatedOrders.forEach((o) => {
+        totalItemsQty += (parseInt(o.qty, 10) || 1);
+        const clean = o.cleanTracking || normalizeTracking(o.trackingId);
+        const scanInfo = clean ? scanTrackingMap.get(clean) : null;
+        if (scanInfo) {
+          o.isDispatched = true;
+          o.actualScanDate = scanInfo.firstScanDate;
+          o.actualScanTime = scanInfo.firstScanTime;
+          o.dispatchedBy = scanInfo.scanner;
+          dispatchedCount++;
+        } else {
+          o.isDispatched = false;
+          o.actualScanDate = null;
+          o.actualScanTime = null;
+          o.dispatchedBy = null;
+          if (o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel')))) {
+            cancelledCount++;
+          } else {
+            backlogCount++;
+          }
+        }
+      });
+
+      // Save to state
+      state.monthlyOrders = consolidatedOrders;
+      state.monthlyScans = allScans;
+
+      // Completion Rate
+      const totalOrders = consolidatedOrders.length;
+      const completionRate = totalOrders > 0 ? Math.round((dispatchedCount / totalOrders) * 100) : 0;
+
+      // 6. Render Monthly KPIs
+      if ($('monthly-kpi-orders')) $('monthly-kpi-orders').innerText = totalOrders.toLocaleString();
+      if ($('monthly-kpi-orders-sub')) $('monthly-kpi-orders-sub').innerText = `รวมสินค้าทั้งสิ้น ${totalItemsQty.toLocaleString()} ชิ้น (${formatThaiMonth(ym)})`;
+
+      if ($('monthly-kpi-scanned')) $('monthly-kpi-scanned').innerText = dispatchedCount.toLocaleString();
+      if ($('monthly-kpi-scanned-sub')) $('monthly-kpi-scanned-sub').innerText = `คิดเป็น ${completionRate}% ของคำสั่งซื้อทั้งหมด`;
+
+      if ($('monthly-kpi-pending')) $('monthly-kpi-pending').innerText = backlogCount.toLocaleString();
+      if ($('monthly-kpi-pending-sub')) $('monthly-kpi-pending-sub').innerText = `ยังไม่สแกนขึ้นรถ (รอผลิต / จัดส่งรอบถัดไป)`;
+
+      if ($('monthly-kpi-total-scans')) $('monthly-kpi-total-scans').innerText = allScans.length.toLocaleString();
+      if ($('monthly-kpi-total-scans-sub')) $('monthly-kpi-total-scans-sub').innerText = `ยิงพัสดุเฉลี่ยวันละ ${Math.round(allScans.length / Math.max(1, dailyScansMap.size))} ครั้ง`;
+
+      if ($('monthly-table-total-boxes')) $('monthly-table-total-boxes').innerText = dispatchedCount.toLocaleString();
+
+      // 7. Render Sub-Components
+      renderMonthlyDailyBreakdown(dailyScansMap, consolidatedOrders);
+      renderMonthlyCarrierStats(consolidatedOrders);
+      renderMonthlyTopBacklogSkus(consolidatedOrders);
+
+      // 8. Update Tab 2 Badges
+      if ($('badge-count-all')) $('badge-count-all').innerText = totalOrders.toLocaleString();
+      if ($('badge-count-qty')) $('badge-count-qty').innerText = totalItemsQty.toLocaleString();
+      if ($('badge-count-missing')) $('badge-count-missing').innerText = backlogCount.toLocaleString();
+      if ($('badge-count-scanned')) $('badge-count-scanned').innerText = dispatchedCount.toLocaleString();
+      const untrackedCount = consolidatedOrders.filter((o) => !o.cleanTracking || o.isCancelled).length;
+      if ($('badge-count-untracked')) $('badge-count-untracked').innerText = untrackedCount.toLocaleString();
+
+      renderOrdersTable();
+      updateCarrierDropdown();
+    } finally {
+      isFetchingMonthlyData = false;
+      lucide.createIcons();
+    }
+  }
+
+  function renderMonthlyDailyBreakdown(dailyScansMap, consolidatedOrders) {
+    const tbody = $('monthly-daily-breakdown-body');
+    if (!tbody) return;
+
+    const dates = Array.from(dailyScansMap.keys()).sort();
+    if (dates.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="py-8 text-center text-slate-400">
+            <i data-lucide="calendar-x" class="w-8 h-8 mx-auto mb-2 text-slate-300"></i>
+            <div>ไม่พบข้อมูลการสแกนขึ้นรถในเดือนนี้</div>
+          </td>
+        </tr>
+      `;
+      lucide.createIcons();
+      return;
+    }
+
+    const trackingCarrierMap = new Map();
+    consolidatedOrders.forEach((o) => {
+      if (o.cleanTracking) {
+        trackingCarrierMap.set(o.cleanTracking, o.carrier || 'ทั่วไป');
+      }
+    });
+
+    let html = '';
+    dates.forEach((dateStr, idx) => {
+      const scans = dailyScansMap.get(dateStr) || [];
+      const uniqueBoxes = new Set();
+      const carrierCounts = {};
+
+      scans.forEach((s) => {
+        const clean = s.cleanTracking || normalizeTracking(s.trackingId);
+        if (clean) {
+          uniqueBoxes.add(clean);
+          const carrier = trackingCarrierMap.get(clean) || s.matchedCarrier || detectCarrier(clean, '') || 'ทั่วไป';
+          carrierCounts[carrier] = (carrierCounts[carrier] || 0) + 1;
+        }
+      });
+
+      const carrierBadges = Object.entries(carrierCounts).map(([c, cnt]) => {
+        let color = 'bg-slate-100 text-slate-700 border-slate-200';
+        if (c.includes('BEST')) color = 'bg-sky-50 text-sky-800 border-sky-300';
+        else if (c.includes('Flash')) color = 'bg-amber-50 text-amber-800 border-amber-300';
+        else if (c.includes('Shopee') || c.includes('SPX')) color = 'bg-orange-50 text-orange-800 border-orange-300';
+        else if (c.includes('Kerry')) color = 'bg-yellow-50 text-yellow-800 border-yellow-300';
+        return `<span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${color}">${escapeHtml(c)}: ${cnt}</span>`;
+      }).join(' ');
+
+      const dParts = dateStr.split('-');
+      const dThai = `${parseInt(dParts[2], 10)}/${parseInt(dParts[1], 10)}/${parseInt(dParts[0], 10) + 543}`;
+
+      html += `
+        <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+          <td class="py-3 px-4 text-center font-mono text-slate-400">${idx + 1}</td>
+          <td class="py-3 px-4 font-bold text-slate-800 flex items-center gap-2">
+            <i data-lucide="calendar" class="w-3.5 h-3.5 text-indigo-500"></i>
+            <span>${dThai}</span>
+            <span class="text-[10px] text-slate-400 font-mono">(${dateStr})</span>
+          </td>
+          <td class="py-3 px-4 text-center">
+            <span class="font-bold text-emerald-700 font-mono text-sm bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">${uniqueBoxes.size.toLocaleString()} กล่อง</span>
+            <span class="text-[10px] text-slate-400 ml-1">(${scans.length} สแกน)</span>
+          </td>
+          <td class="py-3 px-4">
+            <div class="flex flex-wrap items-center gap-1.5">
+              ${carrierBadges || '<span class="text-slate-400">-</span>'}
+            </div>
+          </td>
+          <td class="py-3 px-4">
+            <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+              <i data-lucide="check-circle" class="w-3.5 h-3.5 text-emerald-500"></i>
+              ตัดรอบส่งมอบแล้ว
+            </span>
+          </td>
+          <td class="py-3 px-4 text-center">
+            <button class="btn-jump-to-date px-2 py-1 text-[11px] font-semibold rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition cursor-pointer" data-date="${dateStr}">
+              ดูวันนั้น →
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = html;
+    lucide.createIcons();
+
+    tbody.querySelectorAll('.btn-jump-to-date').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetDate = btn.dataset.date;
+        state.activeDate = targetDate;
+        if ($('selected-date')) $('selected-date').value = targetDate;
+        switchViewMode('day');
+        switchTab('tab-summary');
+      });
+    });
+  }
+
+  function renderMonthlyCarrierStats(consolidatedOrders) {
+    const container = $('monthly-carrier-stats');
+    if (!container) return;
+
+    if (consolidatedOrders.length === 0) {
+      container.innerHTML = '<div class="text-xs text-slate-400 py-3 text-center">ไม่มีข้อมูลออเดอร์</div>';
+      return;
+    }
+
+    const carrierCounts = {};
+    const carrierDispatched = {};
+
+    consolidatedOrders.forEach((o) => {
+      const c = o.carrier || 'ทั่วไป';
+      carrierCounts[c] = (carrierCounts[c] || 0) + 1;
+      if (o.isDispatched) {
+        carrierDispatched[c] = (carrierDispatched[c] || 0) + 1;
+      }
+    });
+
+    const entries = Object.entries(carrierCounts).sort((a, b) => b[1] - a[1]);
+    const total = consolidatedOrders.length;
+
+    let html = '';
+    entries.forEach(([carrier, count]) => {
+      const disp = carrierDispatched[carrier] || 0;
+      const pct = Math.round((count / total) * 100);
+      const dispPct = count > 0 ? Math.round((disp / count) * 100) : 0;
+
+      html += `
+        <div class="space-y-1">
+          <div class="flex items-center justify-between text-xs font-semibold">
+            <span class="text-slate-800">${escapeHtml(carrier)}</span>
+            <span class="text-slate-600 font-mono">${count.toLocaleString()} กล่อง (${pct}%) <span class="text-emerald-600 font-bold ml-1">ขึ้นรถแล้ว ${disp} (${dispPct}%)</span></span>
+          </div>
+          <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden flex">
+            <div class="bg-emerald-500 h-2 transition-all duration-500" style="width: ${dispPct}%"></div>
+            <div class="bg-amber-400 h-2 transition-all duration-500" style="width: ${100 - dispPct}%"></div>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  }
+
+  function renderMonthlyTopBacklogSkus(consolidatedOrders) {
+    const container = $('monthly-top-backlog-skus');
+    if (!container) return;
+
+    const pendingOrders = consolidatedOrders.filter((o) => !o.isDispatched && !o.isCancelled);
+    if (pendingOrders.length === 0) {
+      container.innerHTML = `
+        <div class="text-xs text-emerald-600 py-3 text-center flex items-center justify-center gap-1.5 font-bold">
+          <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i>
+          ยอดเยี่ยม! ไม่มีออเดอร์ค้างส่งในเดือนนี้
+        </div>
+      `;
+      lucide.createIcons();
+      return;
+    }
+
+    const skuCounts = {};
+    const skuQty = {};
+
+    pendingOrders.forEach((o) => {
+      const s = o.sku || 'ไม่ระบุ SKU';
+      skuCounts[s] = (skuCounts[s] || 0) + 1;
+      skuQty[s] = (skuQty[s] || 0) + (parseInt(o.qty, 10) || 1);
+    });
+
+    const topSkus = Object.entries(skuCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+
+    let html = '';
+    topSkus.forEach(([sku, count], idx) => {
+      const totalPcs = skuQty[sku] || count;
+      html += `
+        <div class="flex items-center justify-between gap-2 p-2 rounded-lg bg-amber-50/50 border border-amber-200">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="w-5 h-5 rounded-full bg-amber-200 text-amber-900 font-bold text-[10px] flex items-center justify-center shrink-0">${idx + 1}</span>
+            <span class="text-xs font-semibold text-slate-800 truncate" title="${escapeHtml(sku)}">${escapeHtml(sku)}</span>
+          </div>
+          <div class="text-right shrink-0">
+            <span class="text-xs font-bold text-amber-800 font-mono">${count} กล่อง</span>
+            <span class="text-[10px] text-amber-700 ml-1">(${totalPcs} ชิ้น)</span>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  }
+
   function renderOrdersTable() {
     const tbody = $('orders-table-body');
     if (!tbody) return;
 
+    const isMonth = state.viewMode === 'month';
     const targetDate = state.activeDate;
-    let list = state.orders.filter((o) => o.shipDate === targetDate);
+    let list = isMonth ? [...state.monthlyOrders] : state.orders.filter((o) => o.shipDate === targetDate);
 
     // Apply Filter
     if (state.currentFilter === 'missing') {
-      list = list.filter((o) => getOrderStatus(o) === 'ยังไม่สแกน / ตกหล่น');
+      if (isMonth) {
+        list = list.filter((o) => !o.isDispatched && !o.isCancelled && !(o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+      } else {
+        list = list.filter((o) => getOrderStatus(o) === 'ยังไม่สแกน / ตกหล่น');
+      }
     } else if (state.currentFilter === 'scanned') {
-      list = list.filter((o) => getOrderStatus(o) === 'สแกนแล้ว' || getOrderStatus(o) === 'สแกนซ้ำ');
+      if (isMonth) {
+        list = list.filter((o) => o.isDispatched);
+      } else {
+        list = list.filter((o) => getOrderStatus(o) === 'สแกนแล้ว' || getOrderStatus(o) === 'สแกนซ้ำ');
+      }
     } else if (state.currentFilter === 'untracked') {
-      list = list.filter((o) => !o.cleanTracking || o.isCancelled || getOrderStatus(o) === 'ไม่มีเลข Tracking (เช็คยกเลิก)' || getOrderStatus(o) === 'ลูกค้ายกเลิกคำสั่งซื้อ');
+      list = list.filter((o) => !o.cleanTracking || o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
     } else if (state.currentFilter === 'issues') {
-      list = list.filter((o) => {
-        const s = getOrderStatus(o);
-        return s === 'ตรวจ Tracking ซ้ำ' || s === 'ข้อมูลไม่ครบ/รูปแบบผิด' || s === 'ตรวจจำนวนสินค้า' || s === 'ไม่มีเลข Tracking (เช็คยกเลิก)' || s === 'ลูกค้ายกเลิกคำสั่งซื้อ';
-      });
+      if (isMonth) {
+        list = list.filter((o) => !o.cleanTracking || o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+      } else {
+        list = list.filter((o) => {
+          const s = getOrderStatus(o);
+          return s === 'ตรวจ Tracking ซ้ำ' || s === 'ข้อมูลไม่ครบ/รูปแบบผิด' || s === 'ตรวจจำนวนสินค้า' || s === 'ไม่มีเลข Tracking (เช็คยกเลิก)' || s === 'ลูกค้ายกเลิกคำสั่งซื้อ';
+        });
+      }
     }
 
     // Apply Carrier Filter
@@ -1449,11 +2024,14 @@
     }
 
     if (list.length === 0) {
+      const msg = isMonth
+        ? `ไม่พบรายการคำสั่งซื้อของเดือน ${formatThaiMonth(state.activeMonth)}`
+        : `ไม่พบรายการคำสั่งซื้อของวันที่ ${state.activeDate}`;
       tbody.innerHTML = `
         <tr>
-          <td colspan="9" class="py-12 text-center text-slate-400">
+          <td colspan="${isMonth ? 11 : 9}" class="py-12 text-center text-slate-400">
             <i data-lucide="package-search" class="w-10 h-10 mx-auto mb-2 text-slate-300"></i>
-            <div>ไม่พบรายการคำสั่งซื้อของวันที่ ${state.activeDate}</div>
+            <div>${msg}</div>
             <div class="text-xs text-slate-400 mt-1">กดปุ่ม "วางรายการจาก Excel" หรือ "โหลดข้อมูลตัวอย่าง" เพื่อเริ่มต้น</div>
           </td>
         </tr>
@@ -1464,20 +2042,52 @@
 
     let html = '';
     list.forEach((order, idx) => {
-      const status = getOrderStatus(order);
-      const badge = getStatusBadge(status);
-      const scanCount = state.scans.filter((s) => s.scanDate === targetDate && s.cleanTracking === order.cleanTracking).length;
-
+      let status = '';
+      let badge = '';
       let rowClass = 'hover:bg-slate-50 transition-colors';
-      if (status === 'สแกนแล้ว') {
-        rowClass += ' row-scanned';
-      } else if (status === 'ยังไม่สแกน / ตกหล่น') {
-        rowClass += ' row-missing';
-      } else if (status === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
-        rowClass += ' bg-rose-50/60 opacity-75';
-      } else if (status === 'ไม่มีเลข Tracking (เช็คยกเลิก)') {
-        rowClass += ' bg-amber-50/70';
+
+      if (isMonth) {
+        if (order.isCancelled || (order.orderStatus && (order.orderStatus.includes('ยกเลิก') || order.orderStatus.toLowerCase().includes('cancel')))) {
+          status = 'ลูกค้ายกเลิกคำสั่งซื้อ';
+          badge = '<span class="badge-status bg-rose-100 text-rose-800 border-rose-300 font-bold line-through"><i data-lucide="x-circle" class="w-3.5 h-3.5 text-rose-600"></i> ลูกค้ายกเลิก</span>';
+          rowClass += ' bg-rose-50/60 opacity-75';
+        } else if (!order.cleanTracking) {
+          status = 'ไม่มีเลข Tracking';
+          badge = '<span class="badge-status bg-amber-100 text-amber-900 border-amber-300 font-bold"><i data-lucide="alert-triangle" class="w-3.5 h-3.5 text-amber-600"></i> ไม่มี Tracking</span>';
+          rowClass += ' bg-amber-50/70';
+        } else if (order.isDispatched) {
+          status = 'สแกนขึ้นรถแล้ว';
+          badge = '<span class="badge-status bg-emerald-50 text-emerald-700 border-emerald-300 font-bold"><i data-lucide="check-circle" class="w-3.5 h-3.5 text-emerald-600"></i> สแกนขึ้นรถแล้ว</span>';
+          rowClass += ' row-scanned';
+        } else {
+          status = 'ค้างส่ง / รอผลิต';
+          badge = '<span class="badge-status bg-amber-50 text-amber-800 border-amber-300 font-bold"><i data-lucide="clock" class="w-3.5 h-3.5 text-amber-600"></i> ค้างส่ง / รอผลิต</span>';
+          rowClass += ' row-missing';
+        }
+      } else {
+        status = getOrderStatus(order);
+        badge = getStatusBadge(status);
+        if (status === 'สแกนแล้ว') {
+          rowClass += ' row-scanned';
+        } else if (status === 'ยังไม่สแกน / ตกหล่น') {
+          rowClass += ' row-missing';
+        } else if (status === 'ลูกค้ายกเลิกคำสั่งซื้อ') {
+          rowClass += ' bg-rose-50/60 opacity-75';
+        } else if (status === 'ไม่มีเลข Tracking (เช็คยกเลิก)') {
+          rowClass += ' bg-amber-50/70';
+        }
       }
+
+      const orderDateCol = isMonth
+        ? `<td class="py-3 px-3.5 text-xs font-mono font-medium text-indigo-700">${escapeHtml(order.originalShipDate || order.orderDate || order.shipDate || '-')}</td>`
+        : '';
+      const scanDateCol = isMonth
+        ? `<td class="py-3 px-3.5 text-xs font-mono">
+            ${order.isDispatched && order.actualScanDate
+              ? `<span class="font-bold text-emerald-700">${escapeHtml(order.actualScanDate)}</span> <span class="text-[10px] text-slate-400 font-normal">${escapeHtml(order.actualScanTime || '')}</span>`
+              : `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">รอผลิต / ค้างส่ง</span>`}
+           </td>`
+        : '';
 
       html += `
         <tr class="${rowClass} border-b border-slate-100">
@@ -1491,6 +2101,8 @@
           <td class="py-3 px-3.5 text-xs">
             <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">${escapeHtml(order.carrier || 'ทั่วไป')}</span>
           </td>
+          ${orderDateCol}
+          ${scanDateCol}
           <td class="py-3 px-3.5 text-xs text-slate-600">${escapeHtml(order.packer || '-')}</td>
           <td class="py-3 px-3.5 text-center">${badge}</td>
           <td class="py-3 px-3.5 text-center text-xs whitespace-nowrap">
@@ -2363,7 +2975,11 @@
     if (!btn) return;
 
     btn.addEventListener('click', () => {
-      exportToExcel();
+      if (state.viewMode === 'month') {
+        exportMonthlyToExcel();
+      } else {
+        exportToExcel();
+      }
     });
   }
 
@@ -2474,6 +3090,186 @@
 
     // Save File
     const fileName = `ตรวจเช็คพัสดุส่งออก_${state.activeDate}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  }
+
+  function exportMonthlyToExcel() {
+    if (!state.monthlyOrders || state.monthlyOrders.length === 0) {
+      alert('ไม่พบข้อมูลคำสั่งซื้อสำหรับเดือนนี้ หรือกำลังโหลดข้อมูล กรุณารอสักครู่แล้วลองกดใหม่อีกครั้งครับ');
+      return;
+    }
+
+    const ym = state.activeMonth;
+    const wb = XLSX.utils.book_new();
+
+    // 1. Sheet 1: สรุปภาพรวมรายเดือน
+    const totalOrders = state.monthlyOrders.length;
+    let totalItemsQty = 0;
+    let dispatchedCount = 0;
+    let backlogCount = 0;
+    let cancelledCount = 0;
+
+    state.monthlyOrders.forEach((o) => {
+      totalItemsQty += (parseInt(o.qty, 10) || 1);
+      if (o.isDispatched) dispatchedCount++;
+      else if (o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel')))) cancelledCount++;
+      else backlogCount++;
+    });
+
+    const completionRate = totalOrders > 0 ? Math.round((dispatchedCount / totalOrders) * 100) : 0;
+    const totalScans = state.monthlyScans.length;
+
+    const summaryData = [
+      ['ระบบตรวจเช็คพัสดุส่งออก QueenCosy - รายงานสรุปภาพรวมประจำเดือน', '', '', ''],
+      ['ประจำเดือน', formatThaiMonth(ym), '', 'ส่งออกเมื่อ: ' + new Date().toLocaleString('th-TH')],
+      ['', '', '', ''],
+      ['ตัวชี้วัดสำคัญ (Key Performance Indicators)', 'จำนวน', 'หน่วย', 'คำอธิบาย'],
+      ['คำสั่งซื้อทั้งหมดในเดือน (Orders)', totalOrders, 'คำสั่งซื้อ', 'ยอดออเดอร์สะสมทั้งหมดที่นำเข้าในเดือนนี้'],
+      ['จำนวนชิ้นสินค้ารวม (Total Items)', totalItemsQty, 'ชิ้น', 'จำนวนโซฟา/เก้าอี้สตูลรวมทั้งหมด'],
+      ['สแกนขึ้นรถแล้ว (Dispatched Boxes)', dispatchedCount, 'กล่อง', 'พัสดุที่ขึ้นรถขนส่งเรียบร้อยแล้ว'],
+      ['พัสดุค้างส่ง / รอผลิต (Pending Backlog)', backlogCount, 'กล่อง', 'ออเดอร์ที่ยังไม่พบการสแกนขึ้นรถ'],
+      ['คำสั่งซื้อที่ลูกค้ายกเลิก (Cancelled)', cancelledCount, 'คำสั่งซื้อ', 'ออเดอร์ที่ลูกค้ายกเลิกระหว่างทาง'],
+      ['อัตราการส่งมอบสำเร็จ (Completion Rate)', completionRate + '%', '%', 'เปอร์เซ็นต์กล่องที่ส่งมอบสำเร็จเทียบกับออเดอร์ทั้งหมด'],
+      ['จำนวนครั้งที่สแกนทั้งหมด (Total Scans)', totalScans, 'ครั้ง', 'จำนวนครั้งที่ยิงบาร์โค้ดทั้งหมดในเดือนนี้'],
+      ['', '', '', ''],
+      ['ตารางสรุปยอดสแกนขึ้นรถแยกรายวัน (Daily Dispatch Breakdown)', '', '', ''],
+      ['ลำดับ', 'วันที่สแกนขึ้นรถ', 'จำนวนกล่องที่ขึ้นรถ (กล่อง)', 'จำนวนครั้งที่สแกน (ครั้ง)']
+    ];
+
+    // Calculate daily scans breakdown for sheet 1
+    const dailyMap = {};
+    state.monthlyScans.forEach((s) => {
+      const d = s.scanDate;
+      if (!d) return;
+      if (!dailyMap[d]) dailyMap[d] = { count: 0, boxes: new Set() };
+      dailyMap[d].count++;
+      const clean = s.cleanTracking || normalizeTracking(s.trackingId);
+      if (clean) dailyMap[d].boxes.add(clean);
+    });
+
+    const sortedDates = Object.keys(dailyMap).sort();
+    sortedDates.forEach((d, idx) => {
+      summaryData.push([
+        idx + 1,
+        d,
+        dailyMap[d].boxes.size,
+        dailyMap[d].count
+      ]);
+    });
+
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'สรุปภาพรวมรายเดือน');
+
+    // 2. Sheet 2: คำสั่งซื้อทั้งหมด
+    const allOrdersHeader = [
+      'วันที่ออเดอร์เข้า',
+      'Order ID',
+      'Tracking ID',
+      'SKU สินค้า (รวมต่อกล่อง)',
+      'จำนวนชิ้น',
+      'ขนส่ง',
+      'สถานะการส่งมอบ',
+      'วันที่สแกนขึ้นรถจริง',
+      'เวลาสแกนขึ้นรถ',
+      'ผู้สแกนขึ้นรถ',
+      'ผู้จัดสินค้า',
+      'หมายเหตุ'
+    ];
+
+    const allOrdersRows = [allOrdersHeader];
+    state.monthlyOrders.forEach((o) => {
+      let statusStr = 'ค้างส่ง / รอผลิต';
+      if (o.isCancelled || (o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel')))) {
+        statusStr = 'ลูกค้ายกเลิก';
+      } else if (o.isDispatched) {
+        statusStr = 'สแกนขึ้นรถแล้ว';
+      } else if (!o.cleanTracking) {
+        statusStr = 'ไม่มี Tracking (เช็คยกเลิก)';
+      }
+
+      allOrdersRows.push([
+        o.originalShipDate || o.orderDate || o.shipDate || '',
+        o.orderId || '',
+        o.trackingId || '',
+        o.sku || '',
+        o.qty || 1,
+        o.carrier || '',
+        statusStr,
+        o.actualScanDate || '',
+        o.actualScanTime || '',
+        o.dispatchedBy || '',
+        o.packer || '',
+        o.notes || ''
+      ]);
+    });
+    const wsAllOrders = XLSX.utils.aoa_to_sheet(allOrdersRows);
+    XLSX.utils.book_append_sheet(wb, wsAllOrders, 'คำสั่งซื้อทั้งหมด');
+
+    // 3. Sheet 3: พัสดุค้างส่ง-รอผลิต (Backlog)
+    const backlogOrders = state.monthlyOrders.filter((o) => !o.isDispatched && !o.isCancelled && !(o.orderStatus && (o.orderStatus.includes('ยกเลิก') || o.orderStatus.toLowerCase().includes('cancel'))));
+    const backlogHeader = [
+      'ลำดับ',
+      'วันที่ออเดอร์เข้า',
+      'Order ID',
+      'Tracking ID',
+      'SKU สินค้าที่ต้องผลิต/จัดส่ง',
+      'จำนวนชิ้น',
+      'ขนส่ง',
+      'ผู้จัดสินค้า',
+      'หมายเหตุ'
+    ];
+
+    const backlogRows = [backlogHeader];
+    backlogOrders.forEach((o, idx) => {
+      backlogRows.push([
+        idx + 1,
+        o.originalShipDate || o.orderDate || o.shipDate || '',
+        o.orderId || '',
+        o.trackingId || '',
+        o.sku || '',
+        o.qty || 1,
+        o.carrier || '',
+        o.packer || '',
+        o.notes || ''
+      ]);
+    });
+    const wsBacklog = XLSX.utils.aoa_to_sheet(backlogRows);
+    XLSX.utils.book_append_sheet(wb, wsBacklog, 'พัสดุค้างส่ง-รอผลิต (Backlog)');
+
+    // 4. Sheet 4: ประวัติการสแกนทั้งหมด
+    const scansHeader = [
+      'ลำดับ',
+      'วันที่สแกน',
+      'เวลาสแกน',
+      'Tracking ID',
+      'Order ID ที่จับคู่ได้',
+      'SKU สินค้า',
+      'ขนส่ง',
+      'ผู้สแกน',
+      'อุปกรณ์ที่ใช้สแกน',
+      'ผลตรวจการจับคู่'
+    ];
+
+    const scansRows = [scansHeader];
+    state.monthlyScans.forEach((s, idx) => {
+      scansRows.push([
+        idx + 1,
+        s.scanDate || '',
+        s.scanTime || '',
+        s.trackingId || '',
+        s.matchedOrderId || '',
+        s.matchedSku ? `${s.matchedSku} (${s.matchedQty || 1} ชิ้น)` : '',
+        s.matchedCarrier || '',
+        s.scanner || '',
+        s.source || '',
+        s.matchResult || ''
+      ]);
+    });
+    const wsScans = XLSX.utils.aoa_to_sheet(scansRows);
+    XLSX.utils.book_append_sheet(wb, wsScans, 'ประวัติการสแกนทั้งหมด');
+
+    // Save Workbook
+    const fileName = `QueenCosy_รายงานตรวจพัสดุรายเดือน_${ym}.xlsx`;
     XLSX.writeFile(wb, fileName);
   }
 

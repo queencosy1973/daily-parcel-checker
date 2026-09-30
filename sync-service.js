@@ -225,6 +225,41 @@ const SyncService = (function () {
     }
   }
 
+  async function fetchMonthlyCloudData(yearMonth) {
+    const cfg = getConfig();
+    if (!cfg.supabaseUrl || !cfg.supabaseKey) return [];
+    try {
+      const pattern = 'QC_PARCEL_DATA_' + yearMonth + '%';
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/production_batches?batch_id=like.${encodeURIComponent(pattern)}&order=batch_id.asc`, {
+        headers: {
+          'apikey': cfg.supabaseKey,
+          'Authorization': `Bearer ${cfg.supabaseKey}`
+        }
+      });
+      if (!res.ok) return [];
+      const rows = await res.json();
+      if (!rows || rows.length === 0) return [];
+      return rows.map((r) => {
+        try {
+          const parsed = JSON.parse(r.items_json || '{}');
+          return {
+            batchId: r.batch_id,
+            date: parsed.date || r.batch_id.replace('QC_PARCEL_DATA_', ''),
+            orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+            scans: Array.isArray(parsed.scans) ? parsed.scans : [],
+            updatedAt: parsed.updatedAt || r.updated_at,
+            updatedBy: parsed.updatedBy || r.imported_by
+          };
+        } catch (e) {
+          return null;
+        }
+      }).filter(Boolean);
+    } catch (e) {
+      console.warn('fetchMonthlyCloudData error:', e);
+      return [];
+    }
+  }
+
   async function pushCloudData(date, orders, scans, scannerName = 'พนักงาน') {
     const cfg = getConfig();
     if (!cfg.supabaseUrl || !cfg.supabaseKey) return false;
@@ -342,6 +377,11 @@ const SyncService = (function () {
     broadcastOrders,
     requestPeerState,
     fetchCloudData,
+    fetchMonthlyCloudData,
     pushCloudData
   };
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { SyncService };
+}
