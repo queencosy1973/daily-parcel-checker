@@ -222,6 +222,19 @@
       }
     });
 
+    // Ensure correct summary sub-view (daily vs monthly) is shown when on tab-summary
+    if (tabId === 'tab-summary') {
+      const summaryDaily = $('summary-daily-view');
+      const summaryMonthly = $('summary-monthly-view');
+      if (state.viewMode === 'month') {
+        if (summaryDaily) summaryDaily.classList.add('hidden');
+        if (summaryMonthly) summaryMonthly.classList.remove('hidden');
+      } else {
+        if (summaryDaily) summaryDaily.classList.remove('hidden');
+        if (summaryMonthly) summaryMonthly.classList.add('hidden');
+      }
+    }
+
     // Focus Gun Input if on scan tab
     if (tabId === 'tab-scan') {
       const gunInput = $('input-barcode-gun');
@@ -1744,6 +1757,9 @@
       const completionRate = totalOrders > 0 ? Math.round((dispatchedCount / totalOrders) * 100) : 0;
 
       // 6. Render Monthly KPIs
+      if ($('monthly-badge-label')) $('monthly-badge-label').innerText = `${ym} (${formatThaiMonth(ym)})`;
+      if ($('monthly-kpi-rate')) $('monthly-kpi-rate').innerText = `${completionRate}%`;
+
       if ($('monthly-kpi-orders')) $('monthly-kpi-orders').innerText = totalOrders.toLocaleString();
       if ($('monthly-kpi-orders-sub')) $('monthly-kpi-orders-sub').innerText = `รวมสินค้าทั้งสิ้น ${totalItemsQty.toLocaleString()} ชิ้น (${formatThaiMonth(ym)})`;
 
