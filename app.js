@@ -2313,27 +2313,62 @@
         // Deduplicate against existing orders in state
         const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
         const filteredNewOrders = [];
+        let updatedTrackingCount = 0;
+
         newOrders.forEach((no) => {
-          const key = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
-          if (!existingKeys.has(key)) {
-            existingKeys.add(key);
-            filteredNewOrders.push(no);
+          const exactKey = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
+          if (existingKeys.has(exactKey)) {
+            return;
           }
+
+          // Check if this order exists in state but previously had no tracking, and now has tracking!
+          if (no.cleanTracking && no.orderId) {
+            const existingOrderWithoutTracking = state.orders.find(
+              (o) => o.orderId === no.orderId && !o.cleanTracking && (o.sku === no.sku || state.orders.filter((x) => x.orderId === no.orderId).length === 1)
+            );
+            if (existingOrderWithoutTracking) {
+              existingOrderWithoutTracking.cleanTracking = no.cleanTracking;
+              existingOrderWithoutTracking.trackingId = no.trackingId;
+              if (no.carrier) existingOrderWithoutTracking.carrier = no.carrier;
+              if (no.orderStatus) existingOrderWithoutTracking.orderStatus = no.orderStatus;
+              existingKeys.add(`${existingOrderWithoutTracking.shipDate}|${existingOrderWithoutTracking.orderId}|${existingOrderWithoutTracking.cleanTracking}|${existingOrderWithoutTracking.sku}`);
+              updatedTrackingCount++;
+              return;
+            }
+          }
+
+          existingKeys.add(exactKey);
+          filteredNewOrders.push(no);
         });
 
-        state.orders = state.orders.concat(filteredNewOrders);
-        const reMatched = reconcileScansAndOrders();
-        SyncService.saveLocalOrders(state.orders);
-        triggerCloudPushDebounced(state.activeDate);
+        if (filteredNewOrders.length > 0) {
+          state.orders = state.orders.concat(filteredNewOrders);
+        }
 
         textarea.value = '';
         if (modal) modal.classList.add('hidden');
 
-        renderAll();
-        if (reMatched > 0) {
-          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
+        if (filteredNewOrders.length > 0 || updatedTrackingCount > 0) {
+          const reMatched = reconcileScansAndOrders();
+          SyncService.saveLocalOrders(state.orders);
+          triggerCloudPushDebounced(state.activeDate);
+          renderAll();
+
+          let msg = '';
+          if (filteredNewOrders.length > 0 && updatedTrackingCount > 0) {
+            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking ที่เพิ่มมาใหม่: ${updatedTrackingCount} รายการ`;
+          } else if (filteredNewOrders.length > 0) {
+            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!`;
+          } else {
+            msg = `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!`;
+          }
+
+          if (reMatched > 0) {
+            msg += `\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`;
+          }
+          alert(msg);
         } else {
-          alert(`นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!`);
+          alert(`📋 ข้อมูลที่วางทั้งหมด (${newOrders.length} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`);
         }
       });
     }
@@ -2378,27 +2413,63 @@
               // Deduplicate against existing orders in state
               const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
               const filteredNewOrders = [];
+              let updatedTrackingCount = 0;
+
               newOrders.forEach((no) => {
-                const key = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
-                if (!existingKeys.has(key)) {
-                  existingKeys.add(key);
-                  filteredNewOrders.push(no);
+                const exactKey = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
+                if (existingKeys.has(exactKey)) {
+                  return;
                 }
+
+                // Check if this order exists in state but previously had no tracking, and now has tracking!
+                if (no.cleanTracking && no.orderId) {
+                  const existingOrderWithoutTracking = state.orders.find(
+                    (o) => o.orderId === no.orderId && !o.cleanTracking && (o.sku === no.sku || state.orders.filter((x) => x.orderId === no.orderId).length === 1)
+                  );
+                  if (existingOrderWithoutTracking) {
+                    existingOrderWithoutTracking.cleanTracking = no.cleanTracking;
+                    existingOrderWithoutTracking.trackingId = no.trackingId;
+                    if (no.carrier) existingOrderWithoutTracking.carrier = no.carrier;
+                    if (no.orderStatus) existingOrderWithoutTracking.orderStatus = no.orderStatus;
+                    existingKeys.add(`${existingOrderWithoutTracking.shipDate}|${existingOrderWithoutTracking.orderId}|${existingOrderWithoutTracking.cleanTracking}|${existingOrderWithoutTracking.sku}`);
+                    updatedTrackingCount++;
+                    return;
+                  }
+                }
+
+                existingKeys.add(exactKey);
+                filteredNewOrders.push(no);
               });
 
-              state.orders = state.orders.concat(filteredNewOrders);
-              const reMatched = reconcileScansAndOrders();
-              SyncService.saveLocalOrders(state.orders);
-              triggerCloudPushDebounced(state.activeDate);
-              fileInput.value = ''; // Reset input to allow re-upload
-
-              renderAll();
-              if (reMatched > 0) {
-                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`);
-              } else {
-                alert(`นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`);
+              if (filteredNewOrders.length > 0) {
+                state.orders = state.orders.concat(filteredNewOrders);
               }
+
+              fileInput.value = ''; // Reset input to allow re-upload
               if (modal) modal.classList.add('hidden');
+
+              if (filteredNewOrders.length > 0 || updatedTrackingCount > 0) {
+                const reMatched = reconcileScansAndOrders();
+                SyncService.saveLocalOrders(state.orders);
+                triggerCloudPushDebounced(state.activeDate);
+                renderAll();
+
+                let msg = '';
+                if (filteredNewOrders.length > 0 && updatedTrackingCount > 0) {
+                  msg = `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${updatedTrackingCount} รายการ`;
+                } else if (filteredNewOrders.length > 0) {
+                  msg = `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`;
+                } else {
+                  msg = `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!\n(จากไฟล์ ${file.name})`;
+                }
+
+                if (reMatched > 0) {
+                  msg += `\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`;
+                }
+                alert(msg);
+              } else {
+                alert(`📋 ข้อมูลในไฟล์ ${file.name} ทั้งหมด (${newOrders.length} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`);
+              }
             } else {
               alert('ไม่พบข้อมูลรายการที่ตรงตามโครงสร้าง');
             }
