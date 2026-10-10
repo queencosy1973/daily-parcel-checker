@@ -1393,10 +1393,26 @@
     lucide.createIcons();
   }
 
-  // =========================================================================
-  // RENDERING ENGINE
-  // =========================================================================
+  const THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  function formatThaiDateBadge(isoStr) {
+    if (!isoStr) return '';
+    const parts = isoStr.split('-');
+    if (parts.length < 3) return isoStr;
+    const y = parseInt(parts[0], 10) + 543;
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    return `${d} ${THAI_MONTHS_SHORT[m] || ''} ${y}`;
+  }
+
+  function updateDateBadge() {
+    const lbl = $('selected-date-label');
+    if (lbl && state.activeDate) {
+      lbl.textContent = formatThaiDateBadge(state.activeDate);
+    }
+  }
+
   function renderAll() {
+    updateDateBadge();
     if (state.viewMode === 'month') {
       loadAndRenderMonthlyData();
     } else {
