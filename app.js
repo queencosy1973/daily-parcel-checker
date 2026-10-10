@@ -2288,8 +2288,39 @@
   }
 
   // =========================================================================
-  // DATA IMPORT & EXPORT
+  // DATA IMPORT & EXPORT (WITH SMART AUTO-DATE & DEDUPLICATION)
   // =========================================================================
+  function extractDateFromFilename(filename) {
+    if (!filename) return null;
+    const name = String(filename).trim();
+
+    // Pattern 1: D.M.YYYY or DD.MM.YYYY (e.g. 9.10.2569, 30.9.2569, 2.10.202569, 18.6.69)
+    const m1 = name.match(/(\d{1,2})[\.\-](\d{1,2})[\.\-](\d{2,6})/);
+    if (m1) {
+      let d = parseInt(m1[1], 10);
+      let m = parseInt(m1[2], 10);
+      let rawY = parseInt(m1[3], 10);
+      let y = rawY;
+      if (y > 200000) y = parseInt(String(rawY).slice(-4), 10); // fix typo like 202569 -> 2569
+      if (y > 2500) y -= 543;
+      else if (rawY === 69 || rawY === 26) y = 2026;
+      else if (rawY < 100) y += 2000;
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+
+    // Pattern 2: YYYY-MM-DD
+    const m2 = name.match(/(\d{4})[\-_](\d{2})[\-_](\d{2})/);
+    if (m2) {
+      let y = parseInt(m2[1], 10);
+      if (y > 2500) y -= 543;
+      return `${y}-${m2[2]}-${m2[3]}`;
+    }
+
+    return null;
+  }
+
   function setupImportModal() {
     const btnOpen = $('btn-open-import');
     const modal = $('modal-import');
@@ -2389,14 +2420,17 @@
       });
     }
 
-    // File Upload Handler (.xlsx, .xls, .csv)
+    // File Upload Handler (.xlsx, .xls, .csv) with Smart Auto-Date Detection
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
 
+        const detectedDate = extractDateFromFilename(file.name);
+        const targetImportDate = detectedDate || state.activeDate;
+
         const reader = new FileReader();
-        reader.onload = (evt) => {
+        reader.onload = async (evt) => {
           try {
             const data = new Uint8Array(evt.target.result);
             const workbook = XLSX.read(data, { type: 'array' });
@@ -2424,7 +2458,36 @@
             // defval: '' guarantees all empty cells are dense empty strings rather than sparse holes
             const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
 
-            const newOrders = parseExcelRows(rows);
+            // If a date was detected from the filename and it differs from currently active date:
+            let switchedDate = false;
+            if (detectedDate && detectedDate !== state.activeDate) {
+              state.activeDate = detectedDate;
+              switchedDate = true;
+              if ($('selected-date')) $('selected-date').value = detectedDate;
+              updateDateBadge();
+              switchViewMode('day');
+
+              // Load existing cloud orders for detectedDate if not already loaded into state
+              if (typeof SyncService !== 'undefined' && SyncService.fetchCloudData) {
+                try {
+                  const cloudBatch = await SyncService.fetchCloudData(detectedDate);
+                  if (cloudBatch && Array.isArray(cloudBatch.orders) && cloudBatch.orders.length > 0) {
+                    const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
+                    cloudBatch.orders.forEach((co) => {
+                      const key = `${co.shipDate}|${co.orderId}|${co.cleanTracking}|${co.sku}`;
+                      if (!existingKeys.has(key)) {
+                        existingKeys.add(key);
+                        state.orders.push(co);
+                      }
+                    });
+                  }
+                } catch (e) {
+                  console.warn('Auto-fetch cloud batch error:', e);
+                }
+              }
+            }
+
+            const newOrders = parseExcelRows(rows, targetImportDate);
             if (newOrders.length > 0) {
               // Deduplicate against existing orders in state
               const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
@@ -2471,12 +2534,15 @@
                 renderAll();
 
                 let msg = '';
+                if (switchedDate) {
+                  msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
+                }
                 if (filteredNewOrders.length > 0 && updatedTrackingCount > 0) {
-                  msg = `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${updatedTrackingCount} รายการ`;
+                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${updatedTrackingCount} รายการ`;
                 } else if (filteredNewOrders.length > 0) {
-                  msg = `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`;
+                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`;
                 } else {
-                  msg = `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!\n(จากไฟล์ ${file.name})`;
+                  msg += `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!\n(จากไฟล์ ${file.name})`;
                 }
 
                 if (reMatched > 0) {
@@ -2484,7 +2550,12 @@
                 }
                 alert(msg);
               } else {
-                alert(`📋 ข้อมูลในไฟล์ ${file.name} ทั้งหมด (${newOrders.length} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`);
+                let msg = '';
+                if (switchedDate) {
+                  msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
+                }
+                msg += `📋 ข้อมูลในไฟล์ ${file.name} ทั้งหมด (${newOrders.length} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`;
+                alert(msg);
               }
             } else {
               alert('ไม่พบข้อมูลรายการที่ตรงตามโครงสร้าง');
@@ -2951,8 +3022,8 @@
     return result;
   }
 
-  function parseExcelRows(rows) {
-    return parseUnifiedRows(rows, state.activeDate);
+  function parseExcelRows(rows, targetDate = null) {
+    return parseUnifiedRows(rows, targetDate || state.activeDate);
   }
 
   function parsePastedOrders(text) {
