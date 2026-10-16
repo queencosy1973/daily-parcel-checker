@@ -103,9 +103,28 @@
   });
 
   function initApp() {
-    // 1. Load saved data
+    // 1. Load saved data from localStorage
     state.orders = SyncService.getLocalOrders();
     state.scans = SyncService.getLocalScans();
+
+    // Resiliently hydrate from IndexedDB if localStorage was pruned or empty
+    if (typeof SyncService.idbGet === 'function') {
+      SyncService.idbGet('orders').then((idbOrders) => {
+        if (Array.isArray(idbOrders) && idbOrders.length > (state.orders ? state.orders.length : 0)) {
+          state.orders = idbOrders;
+          reconcileScansAndOrders();
+          renderAll();
+        }
+      }).catch(() => {});
+
+      SyncService.idbGet('scans').then((idbScans) => {
+        if (Array.isArray(idbScans) && idbScans.length > (state.scans ? state.scans.length : 0)) {
+          state.scans = idbScans;
+          reconcileScansAndOrders();
+          renderAll();
+        }
+      }).catch(() => {});
+    }
 
     // Auto-repair any bundled/multi-line scans from past paste/batch inputs
     repairBundledScans();

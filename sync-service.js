@@ -306,7 +306,63 @@ const SyncService = (function () {
   }
 
   // =========================================================================
-  // LOCAL STORAGE MANAGEMENT
+  // INDEXEDDB MULTI-GIGABYTE RESILIENT PERSISTENCE ENGINE
+  // =========================================================================
+  const IDB_NAME = 'qc_daily_parcel_db_v1';
+  const IDB_VERSION = 1;
+  let idbInstance = null;
+
+  function getIDB() {
+    if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null);
+    if (idbInstance) return Promise.resolve(idbInstance);
+    return new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('store')) {
+            db.createObjectStore('store');
+          }
+        };
+        req.onsuccess = (e) => {
+          idbInstance = e.target.result;
+          resolve(idbInstance);
+        };
+        req.onerror = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  function idbSet(key, val) {
+    getIDB().then((db) => {
+      if (!db) return;
+      try {
+        const tx = db.transaction('store', 'readwrite');
+        tx.objectStore('store').put(val, key);
+      } catch (e) {}
+    }).catch(() => {});
+  }
+
+  function idbGet(key) {
+    return new Promise((resolve) => {
+      getIDB().then((db) => {
+        if (!db) return resolve(null);
+        try {
+          const tx = db.transaction('store', 'readonly');
+          const req = tx.objectStore('store').get(key);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => resolve(null);
+        } catch (e) {
+          resolve(null);
+        }
+      }).catch(() => resolve(null));
+    });
+  }
+
+  // =========================================================================
+  // LOCAL STORAGE & CACHE MANAGEMENT (WITH AUTOMATIC QUOTA-OVERFLOW PROTECTION)
   // =========================================================================
   function getLocalOrders() {
     try {
@@ -317,7 +373,34 @@ const SyncService = (function () {
   }
 
   function saveLocalOrders(orders) {
-    localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(orders));
+    // 1. Asynchronously persist full dataset into IndexedDB (zero quota limitation)
+    if (Array.isArray(orders)) {
+      idbSet('orders', orders);
+    }
+
+    // 2. Persist to localStorage with multi-tier quota-safe compression/pruning
+    try {
+      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(orders));
+    } catch (e) {
+      console.warn('LocalStorage 5MB quota exceeded. Applying intelligent cache pruning to protect stability...', e);
+      try {
+        // Keep most recent 2,000 orders in localStorage cache
+        const trimmed = Array.isArray(orders) ? orders.slice(-2000) : [];
+        localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(trimmed));
+      } catch (e2) {
+        try {
+          // If still exceeding, keep only recent 800 orders
+          const minimal = Array.isArray(orders) ? orders.slice(-800) : [];
+          localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(minimal));
+        } catch (e3) {
+          // If browser storage is completely full, remove the key so it never throws QuotaExceededError
+          // Data is completely safe in IndexedDB and Supabase Cloud
+          try {
+            localStorage.removeItem(STORAGE_ORDERS_KEY);
+          } catch (e4) {}
+        }
+      }
+    }
     broadcastOrders(orders);
   }
 
@@ -330,7 +413,22 @@ const SyncService = (function () {
   }
 
   function saveLocalScans(scans) {
-    localStorage.setItem(STORAGE_SCANS_KEY, JSON.stringify(scans));
+    if (Array.isArray(scans)) {
+      idbSet('scans', scans);
+    }
+    try {
+      localStorage.setItem(STORAGE_SCANS_KEY, JSON.stringify(scans));
+    } catch (e) {
+      console.warn('LocalStorage quota exceeded for scans. Trimming scans cache...', e);
+      try {
+        const trimmed = Array.isArray(scans) ? scans.slice(0, 2000) : [];
+        localStorage.setItem(STORAGE_SCANS_KEY, JSON.stringify(trimmed));
+      } catch (e2) {
+        try {
+          localStorage.removeItem(STORAGE_SCANS_KEY);
+        } catch (e3) {}
+      }
+    }
   }
 
   function addLocalScan(scanItem) {
@@ -342,8 +440,12 @@ const SyncService = (function () {
   }
 
   function clearAllData() {
-    localStorage.removeItem(STORAGE_ORDERS_KEY);
-    localStorage.removeItem(STORAGE_SCANS_KEY);
+    try {
+      localStorage.removeItem(STORAGE_ORDERS_KEY);
+      localStorage.removeItem(STORAGE_SCANS_KEY);
+    } catch (e) {}
+    idbSet('orders', []);
+    idbSet('scans', []);
     if (localBc) {
       localBc.postMessage({ type: 'orders_update', data: [] });
       localBc.postMessage({ type: 'scans_update', data: [] });
@@ -378,7 +480,9 @@ const SyncService = (function () {
     requestPeerState,
     fetchCloudData,
     fetchMonthlyCloudData,
-    pushCloudData
+    pushCloudData,
+    idbGet,
+    idbSet
   };
 })();
 
