@@ -103,15 +103,16 @@
   });
 
   function initApp() {
-    // 1. Load saved data from localStorage
-    state.orders = SyncService.getLocalOrders();
+    // 1. Load saved data from localStorage (with auto-deduplication)
+    const rawLocalOrders = SyncService.getLocalOrders();
+    state.orders = typeof SyncService.deduplicateOrderArray === 'function' ? SyncService.deduplicateOrderArray(rawLocalOrders) : rawLocalOrders;
     state.scans = SyncService.getLocalScans();
 
     // Resiliently hydrate from IndexedDB if localStorage was pruned or empty
     if (typeof SyncService.idbGet === 'function') {
       SyncService.idbGet('orders').then((idbOrders) => {
         if (Array.isArray(idbOrders) && idbOrders.length > (state.orders ? state.orders.length : 0)) {
-          state.orders = idbOrders;
+          state.orders = typeof SyncService.deduplicateOrderArray === 'function' ? SyncService.deduplicateOrderArray(idbOrders) : idbOrders;
           reconcileScansAndOrders();
           renderAll();
         }
@@ -1152,29 +1153,153 @@
     }
   }
 
-  function handleRemoteOrdersBatch(remoteOrders) {
-    if (!Array.isArray(remoteOrders) || remoteOrders.length === 0) return;
-    const existingOrderKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
-    let addedCount = 0;
+  // =========================================================================
+  // UNIVERSAL DEDUPLICATION & ORDER IMPORT ENGINE
+  // =========================================================================
+  function processAndDeduplicateOrders(incomingOrders, targetDate) {
+    if (!Array.isArray(incomingOrders) || incomingOrders.length === 0) {
+      return { added: 0, updatedTracking: 0, newOrdersList: [] };
+    }
 
-    remoteOrders.forEach((ro) => {
-      const key = `${ro.shipDate}|${ro.orderId}|${ro.cleanTracking}|${ro.sku}`;
-      if (!existingOrderKeys.has(key)) {
-        existingOrderKeys.add(key);
-        state.orders.push(ro);
-        addedCount++;
+    const effectiveTargetDate = targetDate || state.activeDate;
+
+    // Index existing state orders into quick lookup maps
+    const trackingSkuMap = new Map();
+    const trackingOnlyMap = new Map();
+    const orderSkuMap = new Map();
+    const orderOnlyMap = new Map();
+
+    state.orders.forEach((o) => {
+      const cleanTrk = o.cleanTracking ? String(o.cleanTracking).trim() : '';
+      const orderId = o.orderId ? String(o.orderId).trim() : '';
+      const sku = o.sku ? String(o.sku).trim() : '';
+
+      if (cleanTrk) {
+        const trkKey = `TRK:${cleanTrk}|${sku}`;
+        trackingSkuMap.set(trkKey, o);
+        if (!trackingOnlyMap.has(cleanTrk)) {
+          trackingOnlyMap.set(cleanTrk, o);
+        }
+      }
+      if (orderId) {
+        const ordKey = `ORD:${orderId}|${sku}`;
+        orderSkuMap.set(ordKey, o);
+        if (!orderOnlyMap.has(orderId)) {
+          orderOnlyMap.set(orderId, []);
+        }
+        orderOnlyMap.get(orderId).push(o);
       }
     });
 
-    if (addedCount > 0) {
+    const filteredNewOrders = [];
+    let updatedTrackingCount = 0;
+
+    incomingOrders.forEach((no) => {
+      no.shipDate = effectiveTargetDate;
+      const cleanTrk = no.cleanTracking ? String(no.cleanTracking).trim() : (no.trackingId ? normalizeTracking(no.trackingId) : '');
+      const orderId = no.orderId ? String(no.orderId).trim() : '';
+      const sku = no.sku ? String(no.sku).trim() : '';
+
+      no.cleanTracking = cleanTrk;
+      const trkKey = cleanTrk ? `TRK:${cleanTrk}|${sku}` : null;
+      const ordKey = orderId ? `ORD:${orderId}|${sku}` : null;
+
+      // 1. Exact match by Tracking + SKU
+      if (trkKey && trackingSkuMap.has(trkKey)) {
+        const existing = trackingSkuMap.get(trkKey);
+        existing.shipDate = effectiveTargetDate;
+        if (no.carrier && !existing.carrier) existing.carrier = no.carrier;
+        if (no.orderStatus) existing.orderStatus = no.orderStatus;
+        if (no.isCancelled !== undefined) existing.isCancelled = no.isCancelled;
+        return; // Exists, deduplicated
+      }
+
+      // 2. Match by Tracking number alone (single-item parcel)
+      if (cleanTrk && trackingOnlyMap.has(cleanTrk)) {
+        const existing = trackingOnlyMap.get(cleanTrk);
+        if (existing.sku === no.sku || !existing.sku || !no.sku) {
+          existing.shipDate = effectiveTargetDate;
+          if (no.carrier && !existing.carrier) existing.carrier = no.carrier;
+          if (no.orderStatus) existing.orderStatus = no.orderStatus;
+          if (no.isCancelled !== undefined) existing.isCancelled = no.isCancelled;
+          return; // Exists, deduplicated
+        }
+      }
+
+      // 3. Match by Order ID + SKU (untracked order receiving tracking)
+      if (ordKey && orderSkuMap.has(ordKey)) {
+        const existing = orderSkuMap.get(ordKey);
+        if (!existing.cleanTracking && cleanTrk) {
+          existing.cleanTracking = cleanTrk;
+          existing.trackingId = no.trackingId || cleanTrk;
+          existing.shipDate = effectiveTargetDate;
+          if (no.carrier) existing.carrier = no.carrier;
+          if (no.orderStatus) existing.orderStatus = no.orderStatus;
+          if (no.isCancelled !== undefined) existing.isCancelled = no.isCancelled;
+          trackingSkuMap.set(trkKey, existing);
+          trackingOnlyMap.set(cleanTrk, existing);
+          updatedTrackingCount++;
+          return;
+        } else {
+          existing.shipDate = effectiveTargetDate;
+          if (no.carrier && !existing.carrier) existing.carrier = no.carrier;
+          if (no.orderStatus) existing.orderStatus = no.orderStatus;
+          return; // Already exists
+        }
+      }
+
+      // 4. Match by Order ID alone when order had no tracking
+      if (orderId && orderOnlyMap.has(orderId)) {
+        const existingList = orderOnlyMap.get(orderId);
+        const untracked = existingList.find((x) => !x.cleanTracking);
+        if (untracked && cleanTrk && (existingList.length === 1 || untracked.sku === no.sku)) {
+          untracked.cleanTracking = cleanTrk;
+          untracked.trackingId = no.trackingId || cleanTrk;
+          untracked.shipDate = effectiveTargetDate;
+          if (no.carrier) untracked.carrier = no.carrier;
+          if (no.orderStatus) untracked.orderStatus = no.orderStatus;
+          if (no.isCancelled !== undefined) untracked.isCancelled = no.isCancelled;
+          if (trkKey) trackingSkuMap.set(trkKey, untracked);
+          trackingOnlyMap.set(cleanTrk, untracked);
+          updatedTrackingCount++;
+          return;
+        }
+      }
+
+      // 5. Genuine new order
+      filteredNewOrders.push(no);
+      if (trkKey) trackingSkuMap.set(trkKey, no);
+      if (cleanTrk) trackingOnlyMap.set(cleanTrk, no);
+      if (ordKey) orderSkuMap.set(ordKey, no);
+      if (orderId) {
+        if (!orderOnlyMap.has(orderId)) orderOnlyMap.set(orderId, []);
+        orderOnlyMap.get(orderId).push(no);
+      }
+    });
+
+    if (filteredNewOrders.length > 0) {
+      state.orders = state.orders.concat(filteredNewOrders);
+    }
+
+    return {
+      added: filteredNewOrders.length,
+      updatedTracking: updatedTrackingCount,
+      newOrdersList: filteredNewOrders
+    };
+  }
+
+  function handleRemoteOrdersBatch(remoteOrders) {
+    if (!Array.isArray(remoteOrders) || remoteOrders.length === 0) return;
+    const res = processAndDeduplicateOrders(remoteOrders, state.activeDate);
+    if (res.added > 0 || res.updatedTracking > 0) {
       SyncService.saveLocalOrders(state.orders);
     }
     const count = reconcileScansAndOrders();
     renderAll();
-    if (addedCount > 0 || count > 0) {
+    if (res.added > 0 || count > 0) {
       const toast = $('desktop-remote-toast');
       if (toast) {
-        toast.innerText = `✨ ได้รับคำสั่งซื้อใหม่ ${addedCount} รายการ และจับคู่สำเร็จ ${count} รายการ`;
+        toast.innerText = `✨ ได้รับคำสั่งซื้อใหม่ ${res.added} รายการ และจับคู่สำเร็จ ${count} รายการ`;
         toast.classList.remove('hidden');
         setTimeout(() => toast.classList.add('hidden'), 4000);
       }
@@ -1236,17 +1361,10 @@
           });
         }
 
-        // 2. Merge Orders from Cloud
+        // 2. Merge Orders from Cloud using robust deduplication
         if (Array.isArray(cloudData.orders) && cloudData.orders.length > 0) {
-          const localOrderKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
-          cloudData.orders.forEach((co) => {
-            const key = `${co.shipDate || targetDate}|${co.orderId}|${co.cleanTracking}|${co.sku}`;
-            if (!localOrderKeys.has(key)) {
-              localOrderKeys.add(key);
-              state.orders.push(co);
-              ordersAdded++;
-            }
-          });
+          const res = processAndDeduplicateOrders(cloudData.orders, targetDate);
+          ordersAdded = res.added;
         }
       }
 
@@ -2363,7 +2481,7 @@
 
     // Apply Imported Data (Paste)
     if (btnApply && textarea) {
-      btnApply.addEventListener('click', () => {
+      btnApply.addEventListener('click', async () => {
         const text = textarea.value.trim();
         if (!text) {
           alert('กรุณาวางข้อมูลก่อนกดยืนยัน');
@@ -2376,57 +2494,30 @@
           return;
         }
 
-        // Deduplicate against existing orders in state
-        const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
-        const filteredNewOrders = [];
-        let updatedTrackingCount = 0;
-
-        newOrders.forEach((no) => {
-          const exactKey = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
-          if (existingKeys.has(exactKey)) {
-            return;
-          }
-
-          // Check if this order exists in state but previously had no tracking, and now has tracking!
-          if (no.cleanTracking && no.orderId) {
-            const existingOrderWithoutTracking = state.orders.find(
-              (o) => o.orderId === no.orderId && !o.cleanTracking && (o.sku === no.sku || state.orders.filter((x) => x.orderId === no.orderId).length === 1)
-            );
-            if (existingOrderWithoutTracking) {
-              existingOrderWithoutTracking.cleanTracking = no.cleanTracking;
-              existingOrderWithoutTracking.trackingId = no.trackingId;
-              if (no.carrier) existingOrderWithoutTracking.carrier = no.carrier;
-              if (no.orderStatus) existingOrderWithoutTracking.orderStatus = no.orderStatus;
-              existingKeys.add(`${existingOrderWithoutTracking.shipDate}|${existingOrderWithoutTracking.orderId}|${existingOrderWithoutTracking.cleanTracking}|${existingOrderWithoutTracking.sku}`);
-              updatedTrackingCount++;
-              return;
-            }
-          }
-
-          existingKeys.add(exactKey);
-          filteredNewOrders.push(no);
-        });
-
-        if (filteredNewOrders.length > 0) {
-          state.orders = state.orders.concat(filteredNewOrders);
-        }
+        const targetDate = state.activeDate;
+        const result = processAndDeduplicateOrders(newOrders, targetDate);
 
         textarea.value = '';
         if (modal) modal.classList.add('hidden');
 
-        if (filteredNewOrders.length > 0 || updatedTrackingCount > 0) {
+        if (result.added > 0 || result.updatedTracking > 0) {
           const reMatched = reconcileScansAndOrders();
           SyncService.saveLocalOrders(state.orders);
-          triggerCloudPushDebounced(state.activeDate);
           renderAll();
 
+          // Instantly sync with Supabase Cloud
+          updateCloudSyncStatusUi('syncing');
+          await SyncService.pushCloudData(targetDate, state.orders, state.scans, state.scannerName);
+          SyncService.broadcastOrders(state.orders);
+          updateCloudSyncStatusUi('synced');
+
           let msg = '';
-          if (filteredNewOrders.length > 0 && updatedTrackingCount > 0) {
-            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking ที่เพิ่มมาใหม่: ${updatedTrackingCount} รายการ`;
-          } else if (filteredNewOrders.length > 0) {
-            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ ${filteredNewOrders.length} รายการ!`;
+          if (result.added > 0 && result.updatedTracking > 0) {
+            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ!\n- รายการใหม่: ${result.added} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${result.updatedTracking} รายการ`;
+          } else if (result.added > 0) {
+            msg = `นำเข้ารายการคำสั่งซื้อสำเร็จ ${result.added} รายการ!`;
           } else {
-            msg = `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!`;
+            msg = `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${result.updatedTracking} รายการ!`;
           }
 
           if (reMatched > 0) {
@@ -2485,83 +2576,48 @@
               if ($('selected-date')) $('selected-date').value = detectedDate;
               updateDateBadge();
               switchViewMode('day');
+            }
 
-              // Load existing cloud orders for detectedDate if not already loaded into state
-              if (typeof SyncService !== 'undefined' && SyncService.fetchCloudData) {
-                try {
-                  const cloudBatch = await SyncService.fetchCloudData(detectedDate);
-                  if (cloudBatch && Array.isArray(cloudBatch.orders) && cloudBatch.orders.length > 0) {
-                    const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
-                    cloudBatch.orders.forEach((co) => {
-                      const key = `${co.shipDate}|${co.orderId}|${co.cleanTracking}|${co.sku}`;
-                      if (!existingKeys.has(key)) {
-                        existingKeys.add(key);
-                        state.orders.push(co);
-                      }
-                    });
-                  }
-                } catch (e) {
-                  console.warn('Auto-fetch cloud batch error:', e);
+            // Pre-fetch latest cloud orders for targetImportDate to ensure 100% up-to-date state
+            if (typeof SyncService !== 'undefined' && SyncService.fetchCloudData) {
+              try {
+                const cloudBatch = await SyncService.fetchCloudData(targetImportDate);
+                if (cloudBatch && Array.isArray(cloudBatch.orders) && cloudBatch.orders.length > 0) {
+                  processAndDeduplicateOrders(cloudBatch.orders, targetImportDate);
                 }
+              } catch (e) {
+                console.warn('Auto-fetch cloud batch error:', e);
               }
             }
 
             const newOrders = parseExcelRows(rows, targetImportDate);
             if (newOrders.length > 0) {
-              // Deduplicate against existing orders in state
-              const existingKeys = new Set(state.orders.map((o) => `${o.shipDate}|${o.orderId}|${o.cleanTracking}|${o.sku}`));
-              const filteredNewOrders = [];
-              let updatedTrackingCount = 0;
-
-              newOrders.forEach((no) => {
-                const exactKey = `${no.shipDate}|${no.orderId}|${no.cleanTracking}|${no.sku}`;
-                if (existingKeys.has(exactKey)) {
-                  return;
-                }
-
-                // Check if this order exists in state but previously had no tracking, and now has tracking!
-                if (no.cleanTracking && no.orderId) {
-                  const existingOrderWithoutTracking = state.orders.find(
-                    (o) => o.orderId === no.orderId && !o.cleanTracking && (o.sku === no.sku || state.orders.filter((x) => x.orderId === no.orderId).length === 1)
-                  );
-                  if (existingOrderWithoutTracking) {
-                    existingOrderWithoutTracking.cleanTracking = no.cleanTracking;
-                    existingOrderWithoutTracking.trackingId = no.trackingId;
-                    if (no.carrier) existingOrderWithoutTracking.carrier = no.carrier;
-                    if (no.orderStatus) existingOrderWithoutTracking.orderStatus = no.orderStatus;
-                    existingKeys.add(`${existingOrderWithoutTracking.shipDate}|${existingOrderWithoutTracking.orderId}|${existingOrderWithoutTracking.cleanTracking}|${existingOrderWithoutTracking.sku}`);
-                    updatedTrackingCount++;
-                    return;
-                  }
-                }
-
-                existingKeys.add(exactKey);
-                filteredNewOrders.push(no);
-              });
-
-              if (filteredNewOrders.length > 0) {
-                state.orders = state.orders.concat(filteredNewOrders);
-              }
+              const result = processAndDeduplicateOrders(newOrders, targetImportDate);
 
               fileInput.value = ''; // Reset input to allow re-upload
               if (modal) modal.classList.add('hidden');
 
-              if (filteredNewOrders.length > 0 || updatedTrackingCount > 0) {
+              if (result.added > 0 || result.updatedTracking > 0) {
                 const reMatched = reconcileScansAndOrders();
                 SyncService.saveLocalOrders(state.orders);
-                triggerCloudPushDebounced(state.activeDate);
                 renderAll();
+
+                // Instantly push to Supabase Cloud before showing alert
+                updateCloudSyncStatusUi('syncing');
+                await SyncService.pushCloudData(targetImportDate, state.orders, state.scans, state.scannerName);
+                SyncService.broadcastOrders(state.orders);
+                updateCloudSyncStatusUi('synced');
 
                 let msg = '';
                 if (switchedDate) {
                   msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
                 }
-                if (filteredNewOrders.length > 0 && updatedTrackingCount > 0) {
-                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${filteredNewOrders.length} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${updatedTrackingCount} รายการ`;
-                } else if (filteredNewOrders.length > 0) {
-                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${filteredNewOrders.length} รายการ!`;
+                if (result.added > 0 && result.updatedTracking > 0) {
+                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${result.added} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${result.updatedTracking} รายการ`;
+                } else if (result.added > 0) {
+                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${result.added} รายการ!`;
                 } else {
-                  msg += `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${updatedTrackingCount} รายการ!\n(จากไฟล์ ${file.name})`;
+                  msg += `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${result.updatedTracking} รายการ!\n(จากไฟล์ ${file.name})`;
                 }
 
                 if (reMatched > 0) {
@@ -2978,14 +3034,8 @@
         rawTrack = '';
       }
 
-      // Parse Ship Date
-      let shipDate = '';
-      if (rawDate) {
-        shipDate = parseDateCell(rawDate);
-      }
-      if (!shipDate) {
-        shipDate = targetDate;
-      }
+      // Parse Ship Date (Priority to explicit targetDate of imported file / active date)
+      let shipDate = targetDate || (rawDate ? parseDateCell(rawDate) : '') || state.activeDate;
 
       // Combine SKU and Variation
       let finalSku = rawSku;

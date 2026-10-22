@@ -197,6 +197,26 @@ const SyncService = (function () {
   // Ensures data is never lost even if devices close or sleep
   // =========================================================================
 
+  function deduplicateOrderArray(arr) {
+    if (!Array.isArray(arr)) return [];
+    const seen = new Set();
+    const result = [];
+    arr.forEach((o) => {
+      if (!o) return;
+      const cleanTrk = o.cleanTracking ? String(o.cleanTracking).trim() : (o.trackingId ? String(o.trackingId).replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, '').toUpperCase() : '');
+      const sku = String(o.sku || '').trim();
+      const orderId = String(o.orderId || '').trim();
+      const key = cleanTrk 
+        ? `TRK:${cleanTrk}|${sku}` 
+        : `ORD:${orderId}|${sku}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(o);
+      }
+    });
+    return result;
+  }
+
   async function fetchCloudData(date) {
     const cfg = getConfig();
     if (!cfg.supabaseUrl || !cfg.supabaseKey) return null;
@@ -212,10 +232,14 @@ const SyncService = (function () {
       const rows = await res.json();
       if (!rows || rows.length === 0) return null;
       const parsed = JSON.parse(rows[0].items_json || '{}');
+      const rawOrders = Array.isArray(parsed.orders) ? parsed.orders : [];
+      const cleanOrders = deduplicateOrderArray(rawOrders);
+      const rawScans = Array.isArray(parsed.scans) ? parsed.scans : [];
+      const cleanScans = rawScans.filter((s) => !s.scanDate || s.scanDate === date);
       return {
         date: parsed.date || date,
-        orders: Array.isArray(parsed.orders) ? parsed.orders : [],
-        scans: Array.isArray(parsed.scans) ? parsed.scans : [],
+        orders: cleanOrders,
+        scans: cleanScans,
         updatedAt: parsed.updatedAt || rows[0].updated_at,
         updatedBy: parsed.updatedBy || rows[0].imported_by
       };
@@ -242,11 +266,16 @@ const SyncService = (function () {
       return rows.map((r) => {
         try {
           const parsed = JSON.parse(r.items_json || '{}');
+          const batchDate = parsed.date || r.batch_id.replace('QC_PARCEL_DATA_', '');
+          const rawOrders = Array.isArray(parsed.orders) ? parsed.orders : [];
+          const cleanOrders = deduplicateOrderArray(rawOrders);
+          const rawScans = Array.isArray(parsed.scans) ? parsed.scans : [];
+          const cleanScans = rawScans.filter((s) => !s.scanDate || s.scanDate === batchDate);
           return {
             batchId: r.batch_id,
-            date: parsed.date || r.batch_id.replace('QC_PARCEL_DATA_', ''),
-            orders: Array.isArray(parsed.orders) ? parsed.orders : [],
-            scans: Array.isArray(parsed.scans) ? parsed.scans : [],
+            date: batchDate,
+            orders: cleanOrders,
+            scans: cleanScans,
             updatedAt: parsed.updatedAt || r.updated_at,
             updatedBy: parsed.updatedBy || r.imported_by
           };
@@ -265,11 +294,10 @@ const SyncService = (function () {
     if (!cfg.supabaseUrl || !cfg.supabaseKey) return false;
     try {
       const batchId = 'QC_PARCEL_DATA_' + date;
-      // Filter for this date if present, or save state
-      const dateOrders = (orders || []).filter(o => o.shipDate === date);
-      const targetOrders = dateOrders.length > 0 ? dateOrders : (orders || []);
-      const dateScans = (scans || []).filter(s => s.scanDate === date);
-      const targetScans = dateScans.length > 0 ? dateScans : (scans || []);
+      // Strictly filter and deduplicate records belonging to this date
+      const dateOrders = (orders || []).filter((o) => o.shipDate === date);
+      const targetOrders = deduplicateOrderArray(dateOrders);
+      const targetScans = (scans || []).filter((s) => s.scanDate === date);
 
       const payload = {
         batch_id: batchId,
@@ -481,6 +509,7 @@ const SyncService = (function () {
     fetchCloudData,
     fetchMonthlyCloudData,
     pushCloudData,
+    deduplicateOrderArray,
     idbGet,
     idbSet
   };
