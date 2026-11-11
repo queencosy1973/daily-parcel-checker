@@ -2530,116 +2530,130 @@
       });
     }
 
-    // File Upload Handler (.xlsx, .xls, .csv) with Smart Auto-Date Detection
+    // File Upload Handler (.xlsx, .xls, .csv) with Smart Auto-Date Detection & Multi-File + Hidden Filter Support
     if (fileInput) {
-      fileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+      fileInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
 
-        const detectedDate = extractDateFromFilename(file.name);
+        // Detect target date from the first file with a recognizable date, or fallback to state.activeDate
+        let detectedDate = null;
+        for (const f of files) {
+          const d = extractDateFromFilename(f.name);
+          if (d) {
+            detectedDate = d;
+            break;
+          }
+        }
         const targetImportDate = detectedDate || state.activeDate;
 
-        const reader = new FileReader();
-        reader.onload = async (evt) => {
-          try {
-            const data = new Uint8Array(evt.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
+        try {
+          let switchedDate = false;
+          if (detectedDate && detectedDate !== state.activeDate) {
+            state.activeDate = detectedDate;
+            switchedDate = true;
+            if ($('selected-date')) $('selected-date').value = detectedDate;
+            updateDateBadge();
+            switchViewMode('day');
+          }
+
+          // Pre-fetch latest cloud orders for targetImportDate to ensure 100% up-to-date state
+          if (typeof SyncService !== 'undefined' && SyncService.fetchCloudData) {
+            try {
+              const cloudBatch = await SyncService.fetchCloudData(targetImportDate);
+              if (cloudBatch && Array.isArray(cloudBatch.orders) && cloudBatch.orders.length > 0) {
+                processAndDeduplicateOrders(cloudBatch.orders, targetImportDate);
+              }
+            } catch (e) {
+              console.warn('Auto-fetch cloud batch error:', e);
+            }
+          }
+
+          let totalParsed = 0;
+          let totalAdded = 0;
+          let totalUpdatedTracking = 0;
+          let totalHiddenSkipped = 0;
+          const fileSummaries = [];
+
+          for (const file of files) {
+            const arrayBuffer = await file.arrayBuffer();
+            const data = new Uint8Array(arrayBuffer);
+            // Pass cellStyles: true so worksheet['!rows'] contains .hidden flags from Excel AutoFilter
+            const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
 
             if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-              alert('ไม่พบแผ่นงาน (Sheet) ในไฟล์ Excel ที่เลือก');
-              return;
+              continue;
             }
 
-            // Look for sheet 'รายการที่ต้องส่ง', 'orders', 'คำสั่งซื้อ' or first sheet
-            let sheetName = workbook.SheetNames.find((s) => 
+            let sheetName = workbook.SheetNames.find((s) =>
               typeof s === 'string' && (
-                s.includes('รายการที่ต้องส่ง') || 
-                s.toLowerCase().includes('order') || 
+                s.includes('รายการที่ต้องส่ง') ||
+                s.toLowerCase().includes('order') ||
                 s.includes('คำสั่งซื้อ')
               )
             ) || workbook.SheetNames[0];
 
             const worksheet = workbook.Sheets[sheetName];
-            if (!worksheet) {
-              alert('ไม่สามารถอ่านข้อมูลแผ่นงานในไฟล์ได้');
-              return;
-            }
+            if (!worksheet) continue;
 
-            // defval: '' guarantees all empty cells are dense empty strings rather than sparse holes
-            const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+            const allRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+            const rowProps = worksheet['!rows'] || [];
+            // Skip rows hidden by Excel Filter
+            const rows = allRows.filter((_, idx) => !(rowProps[idx] && rowProps[idx].hidden));
+            const hiddenCount = allRows.length - rows.length;
+            totalHiddenSkipped += hiddenCount;
 
-            // If a date was detected from the filename and it differs from currently active date:
-            let switchedDate = false;
-            if (detectedDate && detectedDate !== state.activeDate) {
-              state.activeDate = detectedDate;
-              switchedDate = true;
-              if ($('selected-date')) $('selected-date').value = detectedDate;
-              updateDateBadge();
-              switchViewMode('day');
-            }
-
-            // Pre-fetch latest cloud orders for targetImportDate to ensure 100% up-to-date state
-            if (typeof SyncService !== 'undefined' && SyncService.fetchCloudData) {
-              try {
-                const cloudBatch = await SyncService.fetchCloudData(targetImportDate);
-                if (cloudBatch && Array.isArray(cloudBatch.orders) && cloudBatch.orders.length > 0) {
-                  processAndDeduplicateOrders(cloudBatch.orders, targetImportDate);
-                }
-              } catch (e) {
-                console.warn('Auto-fetch cloud batch error:', e);
-              }
-            }
-
-            const newOrders = parseExcelRows(rows, targetImportDate);
+            const fileDate = extractDateFromFilename(file.name) || targetImportDate;
+            const newOrders = parseExcelRows(rows, fileDate);
             if (newOrders.length > 0) {
+              totalParsed += newOrders.length;
               const result = processAndDeduplicateOrders(newOrders, targetImportDate);
-
-              fileInput.value = ''; // Reset input to allow re-upload
-              if (modal) modal.classList.add('hidden');
-
-              if (result.added > 0 || result.updatedTracking > 0) {
-                const reMatched = reconcileScansAndOrders();
-                SyncService.saveLocalOrders(state.orders);
-                renderAll();
-
-                // Instantly push to Supabase Cloud before showing alert
-                updateCloudSyncStatusUi('syncing');
-                await SyncService.pushCloudData(targetImportDate, state.orders, state.scans, state.scannerName);
-                SyncService.broadcastOrders(state.orders);
-                updateCloudSyncStatusUi('synced');
-
-                let msg = '';
-                if (switchedDate) {
-                  msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
-                }
-                if (result.added > 0 && result.updatedTracking > 0) {
-                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ!\n- รายการใหม่: ${result.added} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${result.updatedTracking} รายการ`;
-                } else if (result.added > 0) {
-                  msg += `นำเข้าจากไฟล์ ${file.name} สำเร็จ ${result.added} รายการ!`;
-                } else {
-                  msg += `🔄 อัปเดตเลข Tracking ให้กับคำสั่งซื้อเดิมสำเร็จ ${result.updatedTracking} รายการ!\n(จากไฟล์ ${file.name})`;
-                }
-
-                if (reMatched > 0) {
-                  msg += `\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`;
-                }
-                alert(msg);
-              } else {
-                let msg = '';
-                if (switchedDate) {
-                  msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
-                }
-                msg += `📋 ข้อมูลในไฟล์ ${file.name} ทั้งหมด (${newOrders.length} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`;
-                alert(msg);
-              }
-            } else {
-              alert('ไม่พบข้อมูลรายการที่ตรงตามโครงสร้าง');
+              totalAdded += result.added;
+              totalUpdatedTracking += result.updatedTracking;
+              fileSummaries.push(`• ${file.name}: ${newOrders.length} รายการ${hiddenCount > 0 ? ` (ข้ามแถวที่ซ่อนใน Filter ${hiddenCount} แถว)` : ''}`);
             }
-          } catch (err) {
-            alert('เกิดข้อผิดพลาดในการอ่านไฟล์ Excel: ' + err.message);
           }
-        };
-        reader.readAsArrayBuffer(file);
+
+          fileInput.value = ''; // Reset input to allow re-upload
+          if (modal) modal.classList.add('hidden');
+
+          if (totalParsed > 0) {
+            if (totalAdded > 0 || totalUpdatedTracking > 0) {
+              const reMatched = reconcileScansAndOrders();
+              SyncService.saveLocalOrders(state.orders);
+              renderAll();
+
+              // Instantly push to Supabase Cloud before showing alert
+              updateCloudSyncStatusUi('syncing');
+              await SyncService.pushCloudData(targetImportDate, state.orders, state.scans, state.scannerName);
+              SyncService.broadcastOrders(state.orders);
+              updateCloudSyncStatusUi('synced');
+
+              let msg = '';
+              if (switchedDate) {
+                msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
+              }
+              msg += `✅ นำเข้าข้อมูลสำเร็จ (${files.length} ไฟล์):\n${fileSummaries.join('\n')}\n\n`;
+              msg += `📊 สรุปการบันทึก:\n- เพิ่มรายการใหม่: ${totalAdded} รายการ\n- อัปเดตเลข Tracking เพิ่มเติม: ${totalUpdatedTracking} รายการ`;
+
+              if (reMatched > 0) {
+                msg += `\n\n✨ ระบบได้จับคู่ย้อนหลังกับพัสดุที่สแกนไว้ก่อนหน้านี้สำเร็จ ${reMatched} รายการเรียบร้อยแล้วครับ!`;
+              }
+              alert(msg);
+            } else {
+              let msg = '';
+              if (switchedDate) {
+                msg += `📅 ตรวจพบวันที่จากชื่อไฟล์: ระบบได้สลับหน้าจอไปที่ "${formatThaiDateBadge(detectedDate)}" ให้อัตโนมัติเรียบร้อยครับ!\n\n`;
+              }
+              msg += `📋 ข้อมูลในไฟล์ที่เลือกทั้งหมด (${totalParsed} รายการ) มีอยู่ในระบบเรียบร้อยแล้วครับ!\n${fileSummaries.join('\n')}\n\n(ระบบไม่พบรายการใหม่ที่ต้องเพิ่ม จึงไม่มีการบันทึกรายการซ้ำซ้อน)`;
+              alert(msg);
+            }
+          } else {
+            alert('ไม่พบข้อมูลรายการที่ตรงตามโครงสร้าง');
+          }
+        } catch (err) {
+          alert('เกิดข้อผิดพลาดในการอ่านไฟล์ Excel: ' + err.message);
+        }
       });
     }
   }
@@ -2673,7 +2687,7 @@
     if (/^SPXTH/i.test(clean)) return 'Shopee Xpress';
     if (/^\d{14}$/.test(clean)) return 'BEST Express';
     if (/^(KER|KEX)/i.test(clean)) return 'KEX Express';
-    if (/^(JNT|J&T)/i.test(clean)) return 'J&T Express';
+    if (/^(JNT|J&T|TIK)/i.test(clean)) return 'J&T Express';
     return 'Flash Express';
   }
 
@@ -2853,9 +2867,9 @@
         continue;
       }
 
-      // Tracking ID check: THT..., SPXTH..., 14-digit number like 6677..., or TH+alphanumeric
+      // Tracking ID check: THT..., TIK..., SPXTH..., 14-digit number like 6677..., or TH+alphanumeric
       if (idxTrack === -1 && (
-        /^(THT|SPXTH|KEX|KER|JNT)[0-9A-Z]+$/i.test(val) ||
+        /^(THT|TIK|SPXTH|KEX|KER|JNT)[0-9A-Z]+$/i.test(val) ||
         (/^TH[0-9A-Z]{8,}$/i.test(val) && !val.includes(' ') && val.length <= 22) ||
         (/^\d{13,15}$/.test(val) && val.startsWith('66'))
       )) {
@@ -2876,7 +2890,7 @@
       }
 
       // SKU check: starts with Qs- or model code or furniture keywords
-      if (idxSku === -1 && (/^Qs[\-_]/i.test(val) || val.includes('โซฟา') || val.includes('สตูล') || val.includes('หมอน'))) {
+      if (idxSku === -1 && (/^Qs[\-_]/i.test(val) || val.includes('โซฟา') || val.includes('สตูล') || val.includes('หมอน') || val.includes('เตียง'))) {
         idxSku = i;
         continue;
       }
@@ -2886,6 +2900,19 @@
         idxOrder = i;
         continue;
       }
+    }
+
+    let idxVariation = -1;
+    if (idxSku !== -1 && idxSku + 1 < denseCols.length) {
+      const nextIdx = idxSku + 1;
+      if (nextIdx !== idxQty && nextIdx !== idxTrack && nextIdx !== idxOrder && nextIdx !== idxCarrier && nextIdx !== idxDate && denseCols[nextIdx]) {
+        idxVariation = nextIdx;
+      }
+    }
+
+    // If Order ID is col 0 and SKU is col 1 (TikTok pasted rows without headers), any timestamp column is Created Time, not Ship Date
+    if (idxOrder === 0 && idxSku === 1) {
+      idxDate = -1;
     }
 
     if (idxTrack === -1 && denseCols.length >= 3) {
@@ -2898,7 +2925,7 @@
       idxTrack: idxTrack !== -1 ? idxTrack : (denseCols.length >= 2 ? 1 : 0),
       idxDate,
       idxSku: idxSku !== -1 ? idxSku : (denseCols.length >= 4 ? 3 : -1),
-      idxVariation: -1,
+      idxVariation,
       idxQty: idxQty !== -1 ? idxQty : (denseCols.length >= 5 ? 4 : -1),
       idxCarrier,
       idxPacker: -1,
