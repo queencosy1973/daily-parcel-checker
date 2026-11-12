@@ -1329,7 +1329,7 @@
       const cloudData = await SyncService.fetchCloudData(targetDate);
 
       let scansAdded = 0;
-      let ordersAdded = 0;
+      let ordersChanged = false;
 
       if (cloudData) {
         // 1. Merge Scans from Cloud
@@ -1361,28 +1361,30 @@
           });
         }
 
-        // 2. Merge Orders from Cloud using robust deduplication
+        // 2. Sync Orders from Cloud (Cloud is authoritative when populated, replacing stale/bloated local cache)
         if (Array.isArray(cloudData.orders) && cloudData.orders.length > 0) {
+          const prevLocalCount = state.orders.filter((o) => o.shipDate === targetDate).length;
+          state.orders = state.orders.filter((o) => o.shipDate !== targetDate);
           const res = processAndDeduplicateOrders(cloudData.orders, targetDate);
-          ordersAdded = res.added;
+          if (res.added > 0 || prevLocalCount !== res.added) {
+            ordersChanged = true;
+          }
         }
       }
 
-      // 3. Handle device with local data newer/larger than cloud (e.g., Admin PC who scanned locally)
+      // 3. Push to Cloud only if local has new scans, or if Cloud has NO orders yet for this date
       const currentScansForDate = state.scans.filter((s) => s.scanDate === targetDate);
       const currentOrdersForDate = state.orders.filter((o) => o.shipDate === targetDate);
       const cloudScanCount = cloudData && Array.isArray(cloudData.scans) ? cloudData.scans.length : 0;
       const cloudOrderCount = cloudData && Array.isArray(cloudData.orders) ? cloudData.orders.length : 0;
 
-      if (currentScansForDate.length > cloudScanCount || currentOrdersForDate.length > cloudOrderCount || !cloudData) {
-        if (currentScansForDate.length > 0 || currentOrdersForDate.length > 0) {
-          await SyncService.pushCloudData(targetDate, state.orders, state.scans, state.scannerName);
-          SyncService.broadcastScans(state.scans);
-          SyncService.broadcastOrders(state.orders);
-        }
+      if (currentScansForDate.length > cloudScanCount || (cloudOrderCount === 0 && currentOrdersForDate.length > 0)) {
+        await SyncService.pushCloudData(targetDate, state.orders, state.scans, state.scannerName);
+        SyncService.broadcastScans(state.scans);
+        SyncService.broadcastOrders(state.orders);
       }
 
-      if (scansAdded > 0 || ordersAdded > 0) {
+      if (scansAdded > 0 || ordersChanged || isManual) {
         SyncService.saveLocalScans(state.scans);
         SyncService.saveLocalOrders(state.orders);
         reconcileScansAndOrders();

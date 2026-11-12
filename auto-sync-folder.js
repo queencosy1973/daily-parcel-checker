@@ -45,7 +45,7 @@ function parseMonthFolder(folderName) {
 
 function normalizeTracking(str) {
   if (!str) return '';
-  return String(str).replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, '').toUpperCase();
+  return String(str).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
 }
 
 function detectCarrier(tracking, rawCarrier) {
@@ -265,8 +265,8 @@ function parseExcelFile(filePath, targetDate) {
     const row = rows[r];
     if (!row) continue;
 
-    let rawOrder = colIndices.idxOrder !== -1 && row[colIndices.idxOrder] !== undefined ? String(row[colIndices.idxOrder] || '').trim() : '';
-    let rawTrack = colIndices.idxTrack !== -1 && row[colIndices.idxTrack] !== undefined ? String(row[colIndices.idxTrack] || '').trim() : '';
+    let rawOrder = colIndices.idxOrder !== -1 && row[colIndices.idxOrder] !== undefined ? String(row[colIndices.idxOrder] || '').trim().replace(/^[\/'"]+|[\/'"]+$/g, '') : '';
+    let rawTrack = colIndices.idxTrack !== -1 && row[colIndices.idxTrack] !== undefined ? String(row[colIndices.idxTrack] || '').trim().replace(/^[\/'"]+|[\/'"]+$/g, '') : '';
     let rawSku = colIndices.idxSku !== -1 && row[colIndices.idxSku] !== undefined ? String(row[colIndices.idxSku] || '').trim() : '';
     let rawVariation = colIndices.idxVariation !== -1 && row[colIndices.idxVariation] !== undefined ? String(row[colIndices.idxVariation] || '').trim() : '';
     let rawCarrier = colIndices.idxCarrier !== -1 && row[colIndices.idxCarrier] !== undefined ? String(row[colIndices.idxCarrier] || '').trim() : '';
@@ -549,6 +549,10 @@ async function runCli() {
     process.exit(1);
   }
 
+  console.log(`=============================================================`);
+  console.log(`🚀 QueenCosy Daily Parcel Checker - ระบบซิงค์โฟลเดอร์อัตโนมัติ`);
+  console.log(`=============================================================`);
+
   if (targetMonthArg) {
     await syncMonthFolder(baseDir, targetMonthArg, true);
   } else {
@@ -569,6 +573,10 @@ async function runCli() {
       await syncMonthFolder(baseDir, latestMonth, true);
     }
   }
+
+  console.log(`\n=============================================================`);
+  console.log(`🎉 ซิงค์ข้อมูลขึ้น Cloud เสร็จสมบูรณ์! เปิดดูบนหน้าเว็บได้เลยครับ`);
+  console.log(`=============================================================`);
 
   if (isWatch) {
     console.log(`\n👀 เปิดโหมดเฝ้าดูโฟลเดอร์อัตโนมัติ (Auto-Watch): ${baseDir}`);
